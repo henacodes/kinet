@@ -1,0 +1,6 @@
+ okay not bad.  but the loop buttons with dark background are throwing me off very much. the off button also needs a fix. also put it in the middle. and when it
+  comes to the pitch slider, the major issue is that it isnt magnetic. the pointer in the middle needs to grab the nearest vertical line. it can not sit in the
+  middle. also the dark background needs too get. let it sit on the plain. also make the vertical lines rotating the theme's dark collor. also make them longer a
+  bit and the entire pitch block needs to be tucked a bit narrower to make it look composed more. one more thing the positive needs to be on the right and negative
+  on the left, not like the one we have rn.
+\n

@@ -3,31 +3,33 @@ package com.kirakos.kinet.ui.theme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 
-private val KinetColorScheme = darkColorScheme(
+private val KinetColorScheme = lightColorScheme(
     primary = WarmTerracotta,
-    onPrimary = CarbonBlack,
+    onPrimary = CreamOffWhite,
     primaryContainer = TerracottaContainer,
-    onPrimaryContainer = TerracottaSoft,
-    secondary = GraphiteMuted,
-    onSecondary = LuminescentWhite,
-    secondaryContainer = DarkElevatedGray,
-    onSecondaryContainer = LuminescentWhite,
+    onPrimaryContainer = StoneTextPrimary,
+    secondary = StoneTextMuted,
+    onSecondary = CreamOffWhite,
+    secondaryContainer = RecessedPlateColor,
+    onSecondaryContainer = StoneTextPrimary,
     tertiary = TerracottaSoft,
-    onTertiary = CarbonBlack,
-    background = DeepObsidian,
-    onBackground = LuminescentWhite,
-    surface = DarkCharcoalSheet,
-    onSurface = LuminescentWhite,
-    surfaceVariant = DarkElevatedGray,
-    onSurfaceVariant = GraphiteMuted,
-    surfaceContainer = DarkCharcoalSheet,
-    surfaceContainerHigh = DarkElevatedGray,
-    outline = DarkOutlineTint,
-    outlineVariant = DarkOutlineTint
+    onTertiary = HardwareCarbon,
+    background = WarmStoneBackground,
+    onBackground = StoneTextPrimary,
+    surface = ElevatedStoneSheet,
+    onSurface = StoneTextPrimary,
+    surfaceVariant = RecessedPlateColor,
+    onSurfaceVariant = StoneTextMuted,
+    surfaceContainer = RecessedPlateColor,
+    surfaceContainerHigh = ElevatedStoneSheet,
+    outline = StoneBorder,
+    outlineVariant = StoneBorder,
+    error = SignalRed,
+    onError = CreamOffWhite
 )
 
 val KinetShapes = Shapes(

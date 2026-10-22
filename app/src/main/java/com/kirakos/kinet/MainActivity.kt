@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kirakos.kinet.ui.components.*
 import com.kirakos.kinet.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -501,6 +502,7 @@ fun StemPlayerScreen(
     val isPlaying by player.isPlaying.collectAsState()
     val positionMs by player.positionMs.collectAsState()
     val durationMs by player.durationMs.collectAsState()
+    val waveform by player.waveform.collectAsState()
 
     val vocVol by player.vocalsVolume.collectAsState()
     val accVol by player.accompVolume.collectAsState()
@@ -512,273 +514,131 @@ fun StemPlayerScreen(
     val loopB by player.loopEndMs.collectAsState()
     val isLooping by player.isLooping.collectAsState()
 
-    val scrollState = rememberScrollState()
+    val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 20.dp)
-            .verticalScroll(scrollState)
+            .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
-        Spacer(modifier = Modifier.height(16.dp))
-
         // Top Navigation Bar
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp)
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                Column {
+                    Text(
+                        text = "Kinet",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Analog stem deck",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            Spacer(modifier = Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = project.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "Stem player",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+
+            // Technical Dot Matrix Accent in top right corner (screenshot2.png)
+            DotGridMatrix(
+                rows = 3,
+                cols = 5,
+                spacing = 5.dp,
+                dotRadius = 1.2.dp,
+                color = MaterialTheme.colorScheme.outline
+            )
         }
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        // Hero Time Display (Calm, one number leads)
-        val posStr = formatTime(positionMs)
-        val durStr = formatTime(durationMs)
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+        // 1. Single Rotating Vinyl Turntable with Mechanical Tonearm
+        VinylTurntable(
+            isPlaying = isPlaying,
+            progress = progress
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 2. Song Metadata (Title + Duration/Pitch tag)
+        Column(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = posStr,
-                style = MaterialTheme.typography.headlineLarge.copy(
+                text = project.title,
+                style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Light,
-                    fontSize = 42.sp,
-                    letterSpacing = (-1).sp
+                    fontSize = 20.sp,
+                    letterSpacing = (-0.3).sp
                 ),
-                color = MaterialTheme.colorScheme.onBackground
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
+            Spacer(modifier = Modifier.height(1.dp))
             Text(
-                text = "of $durStr",
+                text = "Stereo 44.1 kHz • ${if (pitchSt != 0) (if (pitchSt > 0) "+$pitchSt" else "$pitchSt") else "Standard pitch"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // Timeline Slider
-        val sliderValue = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-        Slider(
-            value = sliderValue,
-            onValueChange = { frac ->
-                val target = (frac * durationMs).toLong()
-                player.seekTo(target)
-            },
-            colors = SliderDefaults.colors(
-                thumbColor = MaterialTheme.colorScheme.primary,
-                activeTrackColor = MaterialTheme.colorScheme.primary,
-                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
-            ),
-            modifier = Modifier.fillMaxWidth()
+        // 3. Waveform Scrubber with [   ] Loop Brackets (screenshot.png)
+        WaveformLoopScrubber(
+            waveform = waveform,
+            positionMs = positionMs,
+            durationMs = durationMs,
+            loopStartMs = loopA,
+            loopEndMs = loopB,
+            isLooping = isLooping,
+            onSeekTo = { player.seekTo(it) }
         )
 
-        // Loop Points Indicator
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = if (loopA != null) "Point A: ${formatTime(loopA!!)}" else "A: not set",
-                fontSize = 11.sp,
-                color = if (loopA != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = if (loopB != null) "Point B: ${formatTime(loopB!!)}" else "B: not set",
-                fontSize = 11.sp,
-                color = if (loopB != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Spacer(modifier = Modifier.height(28.dp))
-
-        // Stem Sliders (Integrated sleek fader strips, no huge cards)
-        Text(
-            text = "Stems",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Vocals Row
-        StemFaderRow(
-            label = "Vocals",
-            volume = vocVol,
-            isMuted = isVocMuted,
-            onVolumeChange = { player.setVocalsVolume(it) },
-            onMuteToggle = { player.toggleVocalsMute() }
+        // 4. Card-less Pitch 3D Roller & A/B Loop Controls
+        PitchAndLoopBay(
+            pitchSemitones = pitchSt,
+            onPitchChange = { player.setPitchSemitones(it) },
+            loopStartMs = loopA,
+            loopEndMs = loopB,
+            isLooping = isLooping,
+            onSetLoopA = { player.setLoopPointA() },
+            onSetLoopB = { player.setLoopPointB() },
+            onClearLoop = { player.clearLoop() }
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Instrumental Row
-        StemFaderRow(
-            label = "Instrumental",
-            volume = accVol,
-            isMuted = isAccMuted,
-            onVolumeChange = { player.setAccompanimentVolume(it) },
-            onMuteToggle = { player.toggleAccompanimentMute() }
+        // 5. Modular Stem Faders Bay (Vocals & Music)
+        StemFadersBay(
+            vocalsVolume = vocVol,
+            isVocalsMuted = isVocMuted,
+            onVocalsVolumeChange = { player.setVocalsVolume(it) },
+            onVocalsMuteToggle = { player.toggleVocalsMute() },
+            accompVolume = accVol,
+            isAccompMuted = isAccMuted,
+            onAccompVolumeChange = { player.setAccompanimentVolume(it) },
+            onAccompMuteToggle = { player.toggleAccompanimentMute() }
         )
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // Compact Controls Strip: Pitch Shift & A/B Loop (Clean horizontal layout)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            // Pitch Shifter Strip
-            Surface(
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Pitch",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "${if (pitchSt > 0) "+$pitchSt" else "$pitchSt"} st",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FilledTonalButton(
-                            onClick = { player.setPitchSemitones(pitchSt - 1) },
-                            modifier = Modifier.size(32.dp),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                        ) {
-                            Text("-", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
-                        }
-                        IconButton(
-                            onClick = { player.setPitchSemitones(0) },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "Reset",
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        FilledTonalButton(
-                            onClick = { player.setPitchSemitones(pitchSt + 1) },
-                            modifier = Modifier.size(32.dp),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                        ) {
-                            Text("+", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
-                        }
-                    }
-                }
-            }
-
-            // A/B Looper Strip
-            Surface(
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "A/B loop",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = if (isLooping) "Active" else "Off",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
-                        color = if (isLooping) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FilledTonalButton(
-                            onClick = { player.setLoopPointA() },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            modifier = Modifier.height(32.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (loopA != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Text("Set A", fontSize = 11.sp, color = if (loopA != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        }
-                        FilledTonalButton(
-                            onClick = { player.setLoopPointB() },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            modifier = Modifier.height(32.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (loopB != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Text("Set B", fontSize = 11.sp, color = if (loopB != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        }
-                    }
-                    if (loopA != null || loopB != null) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        TextButton(
-                            onClick = { player.clearLoop() },
-                            contentPadding = PaddingValues(0.dp),
-                            modifier = Modifier.height(22.dp)
-                        ) {
-                            Text("Clear", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // Transport Controls (Play / Pause / Scrub)
+        // 6. Transport Controls (Play / Pause / 5s scrub)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -787,37 +647,37 @@ fun StemPlayerScreen(
             FilledTonalButton(
                 onClick = { player.seekTo(maxOf(0L, positionMs - 5000L)) },
                 shape = CircleShape,
-                modifier = Modifier.size(46.dp),
+                modifier = Modifier.size(44.dp),
                 contentPadding = PaddingValues(0.dp),
                 colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Text("-5s", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
             }
 
-            Spacer(modifier = Modifier.width(20.dp))
+            Spacer(modifier = Modifier.width(22.dp))
 
-            // Main Play/Pause Button
+            // Main Tactile Play/Pause Knob
             Box(
                 modifier = Modifier
                     .size(64.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
+                    .background(HardwareCarbon)
                     .clickable { player.togglePlayPause() },
                 contentAlignment = Alignment.Center
             ) {
                 if (isPlaying) {
-                    PauseIcon(color = MaterialTheme.colorScheme.onPrimary, size = 20.dp)
+                    PauseIcon(color = CreamOffWhite, size = 18.dp)
                 } else {
                     Icon(
                         Icons.Default.PlayArrow,
                         contentDescription = "Play",
-                        tint = MaterialTheme.colorScheme.onPrimary,
+                        tint = CreamOffWhite,
                         modifier = Modifier.size(28.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(20.dp))
+            Spacer(modifier = Modifier.width(22.dp))
 
             FilledTonalButton(
                 onClick = { player.seekTo(minOf(durationMs, positionMs + 5000L)) },
@@ -830,69 +690,10 @@ fun StemPlayerScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(36.dp))
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }
 
-@Composable
-fun StemFaderRow(
-    label: String,
-    volume: Float,
-    isMuted: Boolean,
-    onVolumeChange: (Float) -> Unit,
-    onMuteToggle: () -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Normal),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = if (isMuted) "Muted" else "${(volume * 100).toInt()}%",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isMuted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                FilledTonalButton(
-                    onClick = onMuteToggle,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    modifier = Modifier.height(28.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = if (isMuted) MaterialTheme.colorScheme.error.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = if (isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) {
-                    Text(if (isMuted) "Unmute" else "Mute", fontSize = 11.sp)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Slider(
-            value = if (isMuted) 0f else volume,
-            onValueChange = onVolumeChange,
-            enabled = !isMuted,
-            colors = SliderDefaults.colors(
-                thumbColor = MaterialTheme.colorScheme.primary,
-                activeTrackColor = MaterialTheme.colorScheme.primary,
-                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
-            ),
-            modifier = Modifier.fillMaxWidth()
-        )
-    }
-}
 
 @Composable
 fun PauseIcon(color: Color, size: androidx.compose.ui.unit.Dp) {

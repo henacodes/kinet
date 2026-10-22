@@ -64,6 +64,9 @@ class DualStemPlayer {
     private val _isLooping = MutableStateFlow(false)
     val isLooping: StateFlow<Boolean> = _isLooping.asStateFlow()
 
+    private val _waveform = MutableStateFlow<FloatArray>(FloatArray(0))
+    val waveform: StateFlow<FloatArray> = _waveform.asStateFlow()
+
     fun load(project: SongProject) {
         stop()
         releaseAudioTrack()
@@ -88,7 +91,38 @@ class DualStemPlayer {
         _isLooping.value = false
         _pitchSemitones.value = 0
 
+        computeWaveform()
+
         initAudioTrack()
+    }
+
+    private fun computeWaveform() {
+        val numBars = 64
+        val peaks = FloatArray(numBars) { 0.15f }
+        val pcm = accompPcm ?: vocalsPcm
+        if (pcm != null && pcm.isNotEmpty()) {
+            val totalSamples = pcm.size
+            val step = totalSamples / numBars
+            var maxPeak = 0.01f
+            for (i in 0 until numBars) {
+                val start = i * step
+                val end = minOf(start + step, totalSamples)
+                var sumSquares = 0.0
+                var count = 0
+                for (j in start until end step 8) {
+                    val sample = pcm[j].toFloat() / 32768f
+                    sumSquares += sample * sample
+                    count++
+                }
+                val rms = if (count > 0) kotlin.math.sqrt(sumSquares / count).toFloat() else 0.05f
+                peaks[i] = rms
+                if (rms > maxPeak) maxPeak = rms
+            }
+            for (i in 0 until numBars) {
+                peaks[i] = (peaks[i] / maxPeak).coerceIn(0.12f, 1.0f)
+            }
+        }
+        _waveform.value = peaks
     }
 
     private fun initAudioTrack() {
