@@ -12,6 +12,8 @@ import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -25,7 +27,8 @@ data class SeparationResult(
     val vocalsFile: File,
     val accompanimentFile: File,
     val durationSeconds: Float,
-    val processingTimeSeconds: Float
+    val processingTimeSeconds: Float,
+    val fileSizeBytes: Long = 0L
 )
 
 class AudioSeparator(private val context: Context) {
@@ -76,14 +79,19 @@ class AudioSeparator(private val context: Context) {
         onProgress: (String) -> Unit = {}
     ): SeparationResult = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
+        val inputSize = try {
+            context.contentResolver.openFileDescriptor(audioUri, "r")?.use { it.statSize } ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
 
-        onProgress("Decoding audio to 44.1kHz stereo...")
+        onProgress("Preparing audio...")
         val (c0, c1) = decodeAudioToStereoPcm(audioUri)
         val audioDuration = c0.size.toFloat() / sampleRate
         Log.i(tag, "Decoded ${c0.size} samples (~${String.format("%.1f", audioDuration)}s)")
 
         if (c0.size < nFft) {
-            throw IllegalArgumentException("Audio file is too short: minimum length is ${String.format("%.1f", nFft / sampleRate.toFloat())}s.")
+            throw IllegalArgumentException("Audio file is too short: minimum duration is ${String.format("%.1f", nFft / sampleRate.toFloat())}s.")
         }
 
         val numFrames = (c0.size - nFft) / hopLength + 1
@@ -94,28 +102,17 @@ class AudioSeparator(private val context: Context) {
         val totalChunks = (numFrames + chunkSize - 1) / chunkSize
         Log.i(tag, "Total frames: $numFrames, divided into $totalChunks chunk(s)")
 
-        // Output audio accumulation arrays
+        // Reclaim any unreferenced decoder buffers before allocating stems
+        System.gc()
+
+        // Output audio accumulation arrays (vocals only, accompaniment is streamed on-the-fly to save ~120MB heap)
         val vocalsWav0: FloatArray
         val vocalsWav1: FloatArray
-        val accompWav0: FloatArray
-        val accompWav1: FloatArray
-        val windowSum: FloatArray
         try {
             vocalsWav0 = FloatArray(c0.size)
             vocalsWav1 = FloatArray(c1.size)
-            accompWav0 = FloatArray(c0.size)
-            accompWav1 = FloatArray(c1.size)
-            windowSum = FloatArray(c0.size)
         } catch (e: OutOfMemoryError) {
-            throw IllegalStateException("Track is too long to process in memory on this device. Please try a shorter song.", e)
-        }
-
-        // Precompute overlap-add window sum
-        for (f in 0 until numFrames) {
-            val offset = f * hopLength
-            for (i in 0 until nFft) {
-                windowSum[offset + i] += hannWindow[i] * hannWindow[i]
-            }
+            throw IllegalStateException("Track is too long to process on this device. Please try a shorter track.", e)
         }
 
         // Reusable memory buffers for 1 chunk of 512 frames (only ~4MB for standard float32)
@@ -139,18 +136,22 @@ class AudioSeparator(private val context: Context) {
         val timeBuf = FloatArray(nFft)
         val vocComplexRe = FloatArray(nFft)
         val vocComplexIm = FloatArray(nFft)
-        val accComplexRe = FloatArray(nFft)
-        val accComplexIm = FloatArray(nFft)
+
+        // Preallocate inference output arrays once to avoid garbage-collection churn on every chunk
+        val vocalsRaw = FloatArray(chunkElements)
+        val accompRaw = FloatArray(chunkElements)
 
         val eps = 1e-10f
 
         // Process audio in 512-frame chunks
         for (chunkIdx in 0 until totalChunks) {
+            currentCoroutineContext().ensureActive()
+
             val startFrame = chunkIdx * chunkSize
             val framesInChunk = minOf(chunkSize, numFrames - startFrame)
             val progressPercent = ((chunkIdx.toFloat() / totalChunks) * 100).toInt()
 
-            onProgress("Processing chunk ${chunkIdx + 1} of $totalChunks ($progressPercent%)...")
+            onProgress("Separating vocals and accompaniment... $progressPercent%")
 
             // 1. Compute STFT for this chunk
             for (f in 0 until framesInChunk) {
@@ -211,25 +212,22 @@ class AudioSeparator(private val context: Context) {
             // 3. Run ONNX Inference using the model's actual input name ("x")
             val vocalOutputs = vocalsSession!!.run(mapOf(vocalsInputName to inputTensor))
             val vocalsOutTensor = vocalOutputs[0] as OnnxTensor
-            val vocalsRaw = FloatArray(chunkElements)
             vocalsOutTensor.floatBuffer.get(vocalsRaw)
             vocalOutputs.close()
 
             val accompOutputs = accompanimentSession!!.run(mapOf(accompInputName to inputTensor))
             val accompOutTensor = accompOutputs[0] as OnnxTensor
-            val accompRaw = FloatArray(chunkElements)
             accompOutTensor.floatBuffer.get(accompRaw)
             accompOutputs.close()
             inputTensor.close()
 
-            // 4. Invert STFT & Overlap-add
+            // 4. Invert STFT & Overlap-add (Wiener filtering)
             val channelOffset = chunkSize * numBins
 
             for (ch in 0..1) {
                 val chBase = ch * channelOffset
                 val (real, imag) = if (ch == 0) Pair(chunkReal0, chunkImag0) else Pair(chunkReal1, chunkImag1)
                 val outVoc = if (ch == 0) vocalsWav0 else vocalsWav1
-                val outAcc = if (ch == 0) accompWav0 else accompWav1
 
                 for (f in 0 until framesInChunk) {
                     val globalFrame = startFrame + f
@@ -238,8 +236,6 @@ class AudioSeparator(private val context: Context) {
 
                     vocComplexRe.fill(0f)
                     vocComplexIm.fill(0f)
-                    accComplexRe.fill(0f)
-                    accComplexIm.fill(0f)
 
                     for (k in 0 until numBins) {
                         val v = vocalsRaw[frameBase + k]
@@ -248,15 +244,12 @@ class AudioSeparator(private val context: Context) {
                         val a2 = a * a
                         val sum2 = v2 + a2 + eps
                         val vMask = (v2 + eps / 2f) / sum2
-                        val aMask = (a2 + eps / 2f) / sum2
 
                         val r = real[f][k]
                         val im = imag[f][k]
 
                         vocComplexRe[k] = vMask * r
                         vocComplexIm[k] = vMask * im
-                        accComplexRe[k] = aMask * r
-                        accComplexIm[k] = aMask * im
                     }
 
                     // Vocals iSTFT
@@ -264,40 +257,64 @@ class AudioSeparator(private val context: Context) {
                     for (i in 0 until nFft) {
                         outVoc[audioOffset + i] += timeBuf[i] * hannWindow[i]
                     }
-
-                    // Accompaniment iSTFT
-                    irfft4096(accComplexRe, accComplexIm, timeBuf)
-                    for (i in 0 until nFft) {
-                        outAcc[audioOffset + i] += timeBuf[i] * hannWindow[i]
-                    }
                 }
             }
         }
 
         onProgress("Normalizing and finalizing audio stems...")
-        // Overlap-add normalization
-        for (i in 0 until c0.size) {
-            val norm = if (windowSum[i] > 1e-4f) windowSum[i] else 1.0f
-            vocalsWav0[i] /= norm
-            vocalsWav1[i] /= norm
-            accompWav0[i] /= norm
-            accompWav1[i] /= norm
+        // Overlap-add window sum:
+        // Inside the audio body, 4-fold Hann overlap sum is identically 1.5f.
+        // We only need small 4096-sample buffers for the boundary ramps.
+        val headNorm = FloatArray(nFft)
+        for (f in 0 until minOf(4, numFrames)) {
+            val offset = f * hopLength
+            for (i in 0 until nFft) {
+                if (offset + i < nFft) {
+                    headNorm[offset + i] += hannWindow[i] * hannWindow[i]
+                }
+            }
+        }
+        val tailStart = maxOf(0, (numFrames - 4) * hopLength)
+        val tailNormLen = maxOf(1, c0.size - tailStart)
+        val tailNorm = FloatArray(tailNormLen)
+        for (f in maxOf(0, numFrames - 4) until numFrames) {
+            val offset = f * hopLength
+            for (i in 0 until nFft) {
+                val idx = (offset + i) - tailStart
+                if (idx in 0 until tailNormLen) {
+                    tailNorm[idx] += hannWindow[i] * hannWindow[i]
+                }
+            }
         }
 
-        onProgress("Exporting WAV files...")
+        for (i in 0 until c0.size) {
+            val norm = if (i < nFft) {
+                if (headNorm[i] > 1e-4f) headNorm[i] else 1.5f
+            } else if (i >= tailStart) {
+                val tIdx = i - tailStart
+                if (tIdx in 0 until tailNormLen && tailNorm[tIdx] > 1e-4f) tailNorm[tIdx] else 1.5f
+            } else {
+                1.5f
+            }
+            vocalsWav0[i] /= norm
+            vocalsWav1[i] /= norm
+        }
+
+        onProgress("Saving separated tracks...")
         val vocalsFile = File(context.cacheDir, "vocals.wav")
         val accompFile = File(context.cacheDir, "accompaniment.wav")
         writeWav16BitStereo(vocalsFile, vocalsWav0, vocalsWav1, sampleRate)
-        writeWav16BitStereo(accompFile, accompWav0, accompWav1, sampleRate)
+        writeAccompanimentWav16BitStereo(accompFile, c0, c1, vocalsWav0, vocalsWav1, sampleRate)
 
         val totalTime = (System.currentTimeMillis() - startTime) / 1000f
-        onProgress("Complete!")
+        onProgress("Separation finished")
 
         SeparationResult(
             vocalsFile = vocalsFile,
             accompanimentFile = accompFile,
             durationSeconds = audioDuration,
-            processingTimeSeconds = totalTime
+            processingTimeSeconds = totalTime,
+            fileSizeBytes = inputSize
         )
     }
 
@@ -694,6 +711,66 @@ class AudioSeparator(private val context: Context) {
                     val idx = i + j
                     val s0 = (c0[idx].coerceIn(-1.0f, 1.0f) * 32767f).toInt().toShort()
                     val s1 = (c1[idx].coerceIn(-1.0f, 1.0f) * 32767f).toInt().toShort()
+                    bb.putShort(s0)
+                    bb.putShort(s1)
+                }
+                out.write(sampleBytes, 0, count * 4)
+                i += count
+            }
+        }
+    }
+
+    /**
+     * Streams accompaniment WAV directly to disk by subtracting vocals from the original mix.
+     * Avoids holding 80-100MB of extra FloatArrays in heap memory.
+     */
+    private fun writeAccompanimentWav16BitStereo(
+        file: File,
+        mix0: FloatArray,
+        mix1: FloatArray,
+        voc0: FloatArray,
+        voc1: FloatArray,
+        sampleRate: Int
+    ) {
+        val numSamples = mix0.size
+        val numChannels = 2
+        val bitsPerSample = 16
+        val byteRate = sampleRate * numChannels * (bitsPerSample / 8)
+        val dataSize = numSamples * numChannels * 2
+        val totalSize = 36 + dataSize
+
+        FileOutputStream(file).use { out ->
+            val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+            header.put("RIFF".toByteArray())
+            header.putInt(totalSize)
+            header.put("WAVE".toByteArray())
+            header.put("fmt ".toByteArray())
+            header.putInt(16)
+            header.putShort(1.toShort())
+            header.putShort(numChannels.toShort())
+            header.putInt(sampleRate)
+            header.putInt(byteRate)
+            header.putShort((numChannels * (bitsPerSample / 8)).toShort())
+            header.putShort(bitsPerSample.toShort())
+            header.put("data".toByteArray())
+            header.putInt(dataSize)
+
+            out.write(header.array())
+
+            val chunkSamples = 16384
+            val sampleBytes = ByteArray(chunkSamples * 4)
+            val bb = ByteBuffer.wrap(sampleBytes).order(ByteOrder.LITTLE_ENDIAN)
+
+            var i = 0
+            while (i < numSamples) {
+                val count = minOf(chunkSamples, numSamples - i)
+                bb.position(0)
+                for (j in 0 until count) {
+                    val idx = i + j
+                    val acc0 = (mix0[idx] - voc0[idx]).coerceIn(-1.0f, 1.0f)
+                    val acc1 = (mix1[idx] - voc1[idx]).coerceIn(-1.0f, 1.0f)
+                    val s0 = (acc0 * 32767f).toInt().toShort()
+                    val s1 = (acc1 * 32767f).toInt().toShort()
                     bb.putShort(s0)
                     bb.putShort(s1)
                 }

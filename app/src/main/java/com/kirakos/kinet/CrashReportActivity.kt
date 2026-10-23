@@ -8,17 +8,21 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kirakos.kinet.ui.theme.KinetTheme
@@ -40,6 +44,7 @@ class CrashReportActivity : ComponentActivity() {
                     CrashReportScreen(
                         crashLog = crashLog,
                         onSendTelegram = { CrashReporter.sendCrashToTelegram(this, crashLog) },
+                        onOpenEmail = { CrashReporter.openEmail(this, "Kinet App Crash Report", crashLog) },
                         onCopy = { CrashReporter.copyToClipboard(this, crashLog) },
                         onRestart = {
                             val intent = Intent(this, MainActivity::class.java).apply {
@@ -60,6 +65,7 @@ class CrashReportActivity : ComponentActivity() {
 fun CrashReportScreen(
     crashLog: String,
     onSendTelegram: () -> Unit,
+    onOpenEmail: () -> Unit,
     onCopy: () -> Unit,
     onRestart: () -> Unit,
     modifier: Modifier = Modifier
@@ -87,24 +93,64 @@ fun CrashReportScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Scrollable Log Box (surface tint + border, zero shadow)
+            // Developer Contact Info Card (Calm surface tint + hairline border, zero shadow)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .border(BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Developer contact",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Telegram: @${CrashReporter.DEVELOPER_TELEGRAM}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onSendTelegram() }
+                    )
+                    Text(
+                        text = CrashReporter.DEVELOPER_EMAIL,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clickable { onOpenEmail() }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Scrollable Log Box (Copiable via SelectionContainer, surface tint + border, zero shadow)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surface)
                     .border(BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline), RoundedCornerShape(12.dp))
                     .padding(14.dp)
             ) {
-                Text(
-                    text = crashLog,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                )
+                SelectionContainer {
+                    Text(
+                        text = crashLog,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                }
             }
         }
 

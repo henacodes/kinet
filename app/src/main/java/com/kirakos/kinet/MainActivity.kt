@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -39,6 +41,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -106,6 +109,24 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+data class SeparationCompletionInfo(
+    val title: String,
+    val durationSeconds: Float,
+    val processingTimeSeconds: Float,
+    val fileSizeBytes: Long
+)
+
+fun formatFileSize(bytes: Long): String {
+    if (bytes <= 0L) return "Unknown size"
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb < 1.0) {
+        val kb = bytes / 1024
+        "$kb KB"
+    } else {
+        String.format(Locale.US, "%.1f MB", mb)
+    }
+}
+
 @Composable
 fun KinetApp(
     modifier: Modifier = Modifier,
@@ -124,6 +145,8 @@ fun KinetApp(
     var isSeparating by remember { mutableStateOf(false) }
     var separationProgress by remember { mutableStateOf("Ready") }
     var separationError by remember { mutableStateOf<String?>(null) }
+    var separationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var completionNotice by remember { mutableStateOf<SeparationCompletionInfo?>(null) }
 
     val isPlaying by player.isPlaying.collectAsState()
     val positionMs by player.positionMs.collectAsState()
@@ -135,8 +158,9 @@ fun KinetApp(
         if (uri != null) {
             val title = resolveFileName(uri)
             isSeparating = true
-            separationProgress = "Starting separation..."
-            coroutineScope.launch {
+            separationProgress = "Preparing audio..."
+            completionNotice = null
+            separationJob = coroutineScope.launch {
                 try {
                     val result = separator.separate(uri) { status ->
                         separationProgress = status
@@ -148,16 +172,25 @@ fun KinetApp(
                         tempAccomp = result.accompanimentFile
                     )
                     projects = repository.getAllProjects()
+                    completionNotice = SeparationCompletionInfo(
+                        title = title,
+                        durationSeconds = result.durationSeconds,
+                        processingTimeSeconds = result.processingTimeSeconds,
+                        fileSizeBytes = result.fileSizeBytes
+                    )
                     activeProject = saved
                     player.load(saved)
                     player.play()
                     isDeckOpen = true
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    separationProgress = "Separation canceled"
                 } catch (t: Throwable) {
                     val msg = t.localizedMessage ?: t.toString()
                     separationProgress = "Error: $msg"
                     separationError = "Audio separation could not be completed:\n\n$msg\n\nDetails:\n${t.stackTraceToString().take(1200)}"
                 } finally {
                     isSeparating = false
+                    separationJob = null
                 }
             }
         }
@@ -186,6 +219,7 @@ fun KinetApp(
                     activePlayingProject = activeProject,
                     isPlaying = isPlaying,
                     onSelectProject = { proj ->
+                        if (isSeparating) return@SongLibraryScreen
                         if (activeProject?.id != proj.id) {
                             activeProject = proj
                             player.load(proj)
@@ -194,6 +228,7 @@ fun KinetApp(
                         isDeckOpen = true
                     },
                     onDeleteProject = { id ->
+                        if (isSeparating) return@SongLibraryScreen
                         if (activeProject?.id == id) {
                             player.pause()
                             activeProject = null
@@ -203,6 +238,7 @@ fun KinetApp(
                         playlists = repository.getAllPlaylists()
                     },
                     onRenameProject = { id, newName ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.renameProject(id, newName)
                         projects = repository.getAllProjects()
                         if (activeProject?.id == id) {
@@ -210,6 +246,7 @@ fun KinetApp(
                         }
                     },
                     onToggleFavorite = { id ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.toggleFavorite(id)
                         projects = repository.getAllProjects()
                         if (activeProject?.id == id) {
@@ -217,6 +254,7 @@ fun KinetApp(
                         }
                     },
                     onUpdateCategory = { id, cat ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.updateProjectCategory(id, cat)
                         projects = repository.getAllProjects()
                         if (activeProject?.id == id) {
@@ -224,24 +262,36 @@ fun KinetApp(
                         }
                     },
                     onCreatePlaylist = { name ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.createPlaylist(name)
                         playlists = repository.getAllPlaylists()
                     },
                     onDeletePlaylist = { plId ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.deletePlaylist(plId)
                         playlists = repository.getAllPlaylists()
                     },
                     onAddTrackToPlaylist = { plId, trackId ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.addTrackToPlaylist(plId, trackId)
                         playlists = repository.getAllPlaylists()
                     },
                     onRemoveTrackFromPlaylist = { plId, trackId ->
+                        if (isSeparating) return@SongLibraryScreen
                         repository.removeTrackFromPlaylist(plId, trackId)
                         playlists = repository.getAllPlaylists()
                     },
                     onImportClick = { filePicker.launch("audio/*") },
+                    onCancelSeparation = {
+                        separationJob?.cancel()
+                        separationJob = null
+                        isSeparating = false
+                        separationProgress = "Ready"
+                    },
                     isSeparating = isSeparating,
-                    separationProgress = separationProgress
+                    separationProgress = separationProgress,
+                    completionNotice = completionNotice,
+                    onDismissCompletionNotice = { completionNotice = null }
                 )
 
                 // Sleek Floating Capsule "Now Playing" Bar (No shadows)
@@ -251,12 +301,13 @@ fun KinetApp(
                         isPlaying = isPlaying,
                         positionMs = positionMs,
                         durationMs = durationMs,
-                        onTogglePlayPause = { player.togglePlayPause() },
+                        enabled = !isSeparating,
+                        onTogglePlayPause = { if (!isSeparating) player.togglePlayPause() },
                         onClose = {
                             player.stop()
                             activeProject = null
                         },
-                        onBarClick = { isDeckOpen = true },
+                        onBarClick = { if (!isSeparating) isDeckOpen = true },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(start = 14.dp, end = 14.dp, bottom = 12.dp)
@@ -279,35 +330,94 @@ fun KinetApp(
                 },
                 text = {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 280.dp)
-                            .verticalScroll(rememberScrollState())
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text(
-                            text = separationError ?: "",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        // Developer Contact Banner
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Developer: @${CrashReporter.DEVELOPER_TELEGRAM}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable {
+                                    CrashReporter.sendCrashToTelegram(
+                                        context,
+                                        separationError ?: "Separation error"
+                                    )
+                                }
+                            )
+                            Text(
+                                text = CrashReporter.DEVELOPER_EMAIL,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clickable {
+                                    CrashReporter.openEmail(context, "Separation error", separationError ?: "")
+                                }
+                            )
+                        }
+
+                        // Scrollable, Selectable & Copiable Stack Trace
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surface)
+                                .border(BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline), RoundedCornerShape(10.dp))
+                                .padding(10.dp)
+                        ) {
+                            SelectionContainer {
+                                Text(
+                                    text = separationError ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.verticalScroll(rememberScrollState())
+                                )
+                            }
+                        }
                     }
                 },
                 confirmButton = {
-                    Button(
-                        onClick = {
-                            CrashReporter.sendCrashToTelegram(
-                                context,
-                                separationError ?: "Unknown separation error"
-                            )
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        elevation = null
-                    ) {
-                        Text("Send to Telegram", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = {
+                                CrashReporter.copyToClipboard(
+                                    context,
+                                    separationError ?: "",
+                                    "Separation Error Log"
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Copy log", color = MaterialTheme.colorScheme.primary)
+                        }
+
+                        Button(
+                            onClick = {
+                                CrashReporter.sendCrashToTelegram(
+                                    context,
+                                    separationError ?: "Unknown separation error"
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            elevation = null
+                        ) {
+                            Text("Send to Telegram", style = MaterialTheme.typography.labelLarge)
+                        }
                     }
                 },
                 dismissButton = {
@@ -336,6 +446,7 @@ fun MiniNowPlayingBar(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
+    enabled: Boolean = true,
     onTogglePlayPause: () -> Unit,
     onClose: () -> Unit,
     onBarClick: () -> Unit,
@@ -366,7 +477,8 @@ fun MiniNowPlayingBar(
             .clip(capsuleShape)
             .background(MaterialTheme.colorScheme.surface)
             .border(BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline), capsuleShape)
-            .clickable { onBarClick() }
+            .clickable(enabled = enabled) { onBarClick() }
+            .then(if (!enabled) Modifier.alpha(0.6f) else Modifier)
     ) {
         // Subtle top progress line
         Canvas(
@@ -453,7 +565,7 @@ fun MiniNowPlayingBar(
                         .size(36.dp)
                         .clip(CircleShape)
                         .background(HardwareCarbon)
-                        .clickable { onTogglePlayPause() },
+                        .clickable(enabled = enabled) { onTogglePlayPause() },
                     contentAlignment = Alignment.Center
                 ) {
                     if (isPlaying) {
@@ -512,8 +624,11 @@ fun SongLibraryScreen(
     onAddTrackToPlaylist: (String, String) -> Unit,
     onRemoveTrackFromPlaylist: (String, String) -> Unit,
     onImportClick: () -> Unit,
+    onCancelSeparation: () -> Unit,
     isSeparating: Boolean,
-    separationProgress: String
+    separationProgress: String,
+    completionNotice: SeparationCompletionInfo?,
+    onDismissCompletionNotice: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf("ALL") } // "ALL", "FAVORITES", "PLAYLIST:<id>", "CAT:<name>"
@@ -524,6 +639,8 @@ fun SongLibraryScreen(
     var projectForPlaylist by remember { mutableStateOf<SongProject?>(null) }
     var projectForCategory by remember { mutableStateOf<SongProject?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
+    var showCancelConfirmation by remember { mutableStateOf(false) }
 
     val allCategories = remember(projects) {
         val cats = projects.map { it.category.trim() }
@@ -582,24 +699,61 @@ fun SongLibraryScreen(
                 )
             }
 
-            FilledTonalButton(
-                onClick = onImportClick,
-                enabled = !isSeparating,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = MaterialTheme.colorScheme.onBackground
-                ),
-                elevation = null
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Separate new", fontSize = 13.sp)
+                IconButton(
+                    onClick = { showAboutDialog = true },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "About Kinet",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                if (isSeparating) {
+                    FilledTonalButton(
+                        onClick = { showCancelConfirmation = true },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                            contentColor = MaterialTheme.colorScheme.error
+                        ),
+                        elevation = null
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Cancel separation",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                } else {
+                    FilledTonalButton(
+                        onClick = onImportClick,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onBackground
+                        ),
+                        elevation = null
+                    ) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Separate new", fontSize = 13.sp)
+                    }
+                }
             }
         }
 
@@ -630,6 +784,81 @@ fun SongLibraryScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                }
+            }
+        }
+
+        // --- Completion Notification Card ---
+        if (completionNotice != null && !isSeparating) {
+            val notice = completionNotice
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 14.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column {
+                            Text(
+                                text = "Separation complete",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            val durMin = (notice.durationSeconds.toInt()) / 60
+                            val durSec = (notice.durationSeconds.toInt()) % 60
+                            val durStr = String.format("%d:%02d", durMin, durSec)
+                            val sizeStr = formatFileSize(notice.fileSizeBytes)
+                            val timeStr = String.format(Locale.US, "%.1fs", notice.processingTimeSeconds)
+
+                            Text(
+                                text = "$durStr • $sizeStr • processed in $timeStr",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDismissCompletionNotice,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Dismiss notice",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
         }
@@ -779,8 +1008,9 @@ fun SongLibraryScreen(
                         project = proj,
                         isCurrent = isCurrentlyActive,
                         isPlaying = isCurrentlyActive && isPlaying,
-                        onClick = { onSelectProject(proj) },
-                        onLongClick = { projectForOptions = proj }
+                        enabled = !isSeparating,
+                        onClick = { if (!isSeparating) onSelectProject(proj) },
+                        onLongClick = { if (!isSeparating) projectForOptions = proj }
                     )
                 }
                 item {
@@ -1169,6 +1399,195 @@ fun SongLibraryScreen(
             shape = RoundedCornerShape(16.dp)
         )
     }
+
+    if (showCancelConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showCancelConfirmation = false },
+            title = {
+                Text(
+                    text = "Cancel separation?",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal)
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to stop? Current progress will be discarded.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCancelConfirmation = false
+                        onCancelSeparation()
+                    }
+                ) {
+                    Text("Stop", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelConfirmation = false }) {
+                    Text("Continue", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 0.dp
+        )
+    }
+
+    if (showAboutDialog) {
+        AboutAppDialog(onDismiss = { showAboutDialog = false })
+    }
+}
+
+/**
+ * About Kinet Card dialog adhering strictly to Robi UI taste:
+ * - Warm stone palette
+ * - Light/extralight typography
+ * - Flat surfaces with hairline border, zero drop shadows
+ * - Sentence case everywhere
+ * - Direct links to Kirakos's Telegram, email, and portfolio
+ */
+@Composable
+fun AboutAppDialog(onDismiss: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(
+                    text = "About Kinet",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Light,
+                        fontSize = 22.sp,
+                        letterSpacing = (-0.5).sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Version 0.1.0",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "On-device AI audio stem separation with independent dual playback deck and real-time chord detection.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 18.sp
+                )
+
+                // Creator & Social Profile Card
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .border(BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline), RoundedCornerShape(12.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Creator",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Text(
+                        text = CrashReporter.DEVELOPER_NAME,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                        thickness = 0.5.dp
+                    )
+
+                    // Telegram Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { CrashReporter.sendCrashToTelegram(context, "Hi Kirakos, ") },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Telegram",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "@${CrashReporter.DEVELOPER_TELEGRAM}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    // Email Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { CrashReporter.openEmail(context) },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Email",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = CrashReporter.DEVELOPER_EMAIL,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    // Portfolio Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { CrashReporter.openPortfolio(context) },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Portfolio",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "kirakos.netlify.app",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Close", color = MaterialTheme.colorScheme.primary)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        tonalElevation = 0.dp
+    )
 }
 
 /**
@@ -1218,6 +1637,7 @@ fun CleanProjectCard(
     project: SongProject,
     isCurrent: Boolean,
     isPlaying: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -1242,10 +1662,12 @@ fun CleanProjectCard(
                 shape = RoundedCornerShape(12.dp)
             )
             .combinedClickable(
+                enabled = enabled,
                 onClick = onClick,
                 onLongClick = onLongClick
             )
             .padding(horizontal = 16.dp, vertical = 14.dp)
+            .then(if (!enabled) Modifier.alpha(0.55f) else Modifier)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Equalizer Waveform ኪ (Ki) Splash Logo -->
+    <!-- Left Pillar (Vocals - Warm Terracotta #E07252) -->
+    <path
+        android:strokeColor="#E07252"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M38.00,38.62 L38.00,64.62" />
+    <path
+        android:strokeColor="#E07252"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M42.00,43.12 L42.00,64.62" />
+
+    <!-- Roof Bridge Bars (Master Mix - Warm Cream #F2EEE6) -->
+    <path
+        android:strokeColor="#F2EEE6"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M46.00,43.12 L46.00,48.38" />
+    <path
+        android:strokeColor="#F2EEE6"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M50.00,43.12 L50.00,48.38" />
+    <path
+        android:strokeColor="#F2EEE6"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M54.00,43.12 L54.00,48.38" />
+
+    <!-- Right Pillar (Accompaniment - Warm Cream #F2EEE6) -->
+    <path
+        android:strokeColor="#F2EEE6"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M58.00,43.12 L58.00,64.62" />
+    <path
+        android:strokeColor="#F2EEE6"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M62.00,43.12 L62.00,64.62" />
+
+    <!-- Vowel Branch of ኪ (Sound Pulse Node - Terracotta #E07252) -->
+    <path
+        android:strokeColor="#E07252"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M66.00,58.88 L66.00,64.62" />
+    <path
+        android:strokeColor="#E07252"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M70.00,54.12 L70.00,69.38" />
+
+</vector>
