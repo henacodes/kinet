@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -147,16 +148,20 @@ fun KinetApp(
     var separationError by remember { mutableStateOf<String?>(null) }
     var separationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var completionNotice by remember { mutableStateOf<SeparationCompletionInfo?>(null) }
+    var projectToExport by remember { mutableStateOf<SongProject?>(null) }
 
     val isPlaying by player.isPlaying.collectAsState()
     val positionMs by player.positionMs.collectAsState()
     val durationMs by player.durationMs.collectAsState()
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val title = resolveFileName(uri)
+            val fallbackTitle = resolveFileName(uri)
+            val meta = AudioMetadataExtractor.extract(context, uri, fallbackTitle)
+            val finalTitle = meta.title.ifBlank { fallbackTitle }
             isSeparating = true
             separationProgress = "Preparing audio..."
             completionNotice = null
@@ -166,14 +171,22 @@ fun KinetApp(
                         separationProgress = status
                     }
                     val saved = repository.saveProject(
-                        title = title,
+                        title = finalTitle,
                         durationSeconds = result.durationSeconds,
                         tempVocals = result.vocalsFile,
-                        tempAccomp = result.accompanimentFile
+                        tempAccomp = result.accompanimentFile,
+                        artist = meta.artist,
+                        album = meta.album,
+                        genre = meta.genre,
+                        year = meta.year,
+                        bitrateKbps = meta.bitrateKbps,
+                        sampleRate = meta.sampleRate,
+                        originalFormat = meta.mimeType,
+                        originalFileSizeBytes = meta.fileSizeBytes
                     )
                     projects = repository.getAllProjects()
                     completionNotice = SeparationCompletionInfo(
-                        title = title,
+                        title = finalTitle,
                         durationSeconds = result.durationSeconds,
                         processingTimeSeconds = result.processingTimeSeconds,
                         fileSizeBytes = result.fileSizeBytes
@@ -209,6 +222,9 @@ fun KinetApp(
                 onBack = {
                     // Navigate back to library while audio keeps playing
                     isDeckOpen = false
+                },
+                onExport = {
+                    projectToExport = activeProject
                 }
             )
         } else {
@@ -282,6 +298,7 @@ fun KinetApp(
                         playlists = repository.getAllPlaylists()
                     },
                     onImportClick = { filePicker.launch("audio/*") },
+                    onExportProject = { proj -> projectToExport = proj },
                     onCancelSeparation = {
                         separationJob?.cancel()
                         separationJob = null
@@ -431,6 +448,13 @@ fun KinetApp(
                 containerColor = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(20.dp),
                 tonalElevation = 0.dp
+            )
+        }
+
+        projectToExport?.let { proj ->
+            ExportStemsSheet(
+                project = proj,
+                onDismiss = { projectToExport = null }
             )
         }
     }
@@ -623,6 +647,7 @@ fun SongLibraryScreen(
     onDeletePlaylist: (String) -> Unit,
     onAddTrackToPlaylist: (String, String) -> Unit,
     onRemoveTrackFromPlaylist: (String, String) -> Unit,
+    onExportProject: (SongProject) -> Unit,
     onImportClick: () -> Unit,
     onCancelSeparation: () -> Unit,
     isSeparating: Boolean,
@@ -638,6 +663,7 @@ fun SongLibraryScreen(
     var projectToDelete by remember { mutableStateOf<SongProject?>(null) }
     var projectForPlaylist by remember { mutableStateOf<SongProject?>(null) }
     var projectForCategory by remember { mutableStateOf<SongProject?>(null) }
+    var projectForDetails by remember { mutableStateOf<SongProject?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showCancelConfirmation by remember { mutableStateOf(false) }
@@ -848,16 +874,28 @@ fun SongLibraryScreen(
                         }
                     }
 
-                    IconButton(
-                        onClick = onDismissCompletionNotice,
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Dismiss notice",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = {
+                                projects.firstOrNull { it.title == notice.title }?.let { onExportProject(it) }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("Export", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                        }
+
+                        IconButton(
+                            onClick = onDismissCompletionNotice,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Dismiss notice",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1094,6 +1132,34 @@ fun SongLibraryScreen(
                         val current = proj
                         projectForOptions = null
                         projectToRename = current
+                    }
+                )
+
+                // Export Stems
+                ListItem(
+                    headlineContent = { Text("Export stems", fontSize = 14.sp) },
+                    supportingContent = { Text("Save or share M4A / WAV", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    leadingContent = {
+                        Icon(Icons.Default.Share, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    },
+                    modifier = Modifier.clickable {
+                        val current = proj
+                        projectForOptions = null
+                        onExportProject(current)
+                    }
+                )
+
+                // Track Details
+                ListItem(
+                    headlineContent = { Text("Track details", fontSize = 14.sp) },
+                    supportingContent = { Text("Audio specs & metadata", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    leadingContent = {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    },
+                    modifier = Modifier.clickable {
+                        val current = proj
+                        projectForOptions = null
+                        projectForDetails = current
                     }
                 )
 
@@ -1440,6 +1506,13 @@ fun SongLibraryScreen(
     if (showAboutDialog) {
         AboutAppDialog(onDismiss = { showAboutDialog = false })
     }
+
+    projectForDetails?.let { proj ->
+        TrackMetadataSheet(
+            project = proj,
+            onDismiss = { projectForDetails = null }
+        )
+    }
 }
 
 /**
@@ -1469,7 +1542,7 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Version 0.1.0",
+                    text = "Version 0.1.1",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1687,8 +1760,9 @@ fun CleanProjectCard(
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    val subtitleText = if (project.artist.isNotBlank()) "$durationStr • ${project.artist}" else "$durationStr • $dateStr"
                     Text(
-                        text = "$durationStr • $dateStr",
+                        text = subtitleText,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1737,7 +1811,8 @@ fun CleanProjectCard(
 fun StemPlayerScreen(
     project: SongProject,
     player: DualStemPlayer,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onExport: () -> Unit
 ) {
     val isPlaying by player.isPlaying.collectAsState()
     val positionMs by player.positionMs.collectAsState()
@@ -1757,10 +1832,18 @@ fun StemPlayerScreen(
 
     var showChords by remember { mutableStateOf(true) }
     var showChordInspector by remember { mutableStateOf(false) }
+    var showMetadataSheet by remember { mutableStateOf(false) }
 
     val currentChord = remember(chordSegments, positionMs, pitchSt) {
         val seg = chordSegments.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs }
         seg?.chord?.let { ChordTransposer.transpose(it, pitchSt) } ?: ""
+    }
+
+    val uniqueChords = remember(chordSegments, pitchSt) {
+        chordSegments
+            .map { ChordTransposer.transpose(it.chord, pitchSt) }
+            .filter { it.isNotBlank() }
+            .distinct()
     }
 
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
@@ -1803,27 +1886,56 @@ fun StemPlayerScreen(
                 }
             }
 
-            // Dot grid matrix accent from screenshot2.png
-            DotGridMatrix(
-                rows = 3,
-                cols = 5,
-                spacing = 5.dp,
-                dotRadius = 1.2.dp,
-                color = MaterialTheme.colorScheme.outline
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = onExport,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    elevation = null,
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Share,
+                        contentDescription = "Export stems",
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Export", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+
+                // Dot grid matrix accent from screenshot2.png
+                DotGridMatrix(
+                    rows = 3,
+                    cols = 4,
+                    spacing = 5.dp,
+                    dotRadius = 1.2.dp,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // 1. Vinyl Turntable
+        // 1. Vinyl Turntable with DJ Scratching
         VinylTurntable(
             isPlaying = isPlaying,
-            progress = progress
+            progress = progress,
+            onScratchStart = { player.startScratch() },
+            onScratch = { deltaDeg -> player.scratch(deltaDeg) },
+            onScratchEnd = { player.endScratch() }
         )
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 2. Song Title on its own row — clean and uncrowded
+        // 2. Song Title & Artist
         Text(
             text = project.title,
             style = MaterialTheme.typography.titleLarge.copy(
@@ -1836,20 +1948,44 @@ fun StemPlayerScreen(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth()
         )
+        if (project.artist.isNotBlank()) {
+            Text(
+                text = project.artist + if (project.album.isNotBlank()) " • ${project.album}" else "",
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
 
         Spacer(modifier = Modifier.height(3.dp))
 
-        // Subtitle row: Audio details + Chords Toggle
+        // Subtitle row: Audio details + Specs button + Chords Toggle
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "Stereo 44.1 kHz • ${if (pitchSt != 0) (if (pitchSt > 0) "+$pitchSt st" else "$pitchSt st") else "Standard pitch"}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { showMetadataSheet = true }
+                    .padding(vertical = 2.dp)
+            ) {
+                Text(
+                    text = "Stereo 44.1 kHz • ${if (pitchSt != 0) (if (pitchSt > 0) "+$pitchSt st" else "$pitchSt st") else "Standard pitch"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    Icons.Default.Info,
+                    contentDescription = "Track specs",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.size(13.dp)
+                )
+            }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Live current chord text: pure text [ Chord ], left of toggler, no card
@@ -1894,7 +2030,52 @@ fun StemPlayerScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        // List all distinct chords used in the song
+        if (uniqueChords.isNotEmpty() && showChords) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Chords in track:",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    uniqueChords.forEach { ch ->
+                        val isCurrent = currentChord == ch
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.clickable {
+                                val firstSeg = chordSegments.firstOrNull { ChordTransposer.transpose(it.chord, pitchSt) == ch }
+                                firstSeg?.let { player.seekTo(it.startMs) }
+                            }
+                        ) {
+                            Text(
+                                text = ch,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                    fontSize = 11.sp
+                                ),
+                                color = if (isCurrent) Color.White else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         // 3. Waveform Scrubber
         WaveformLoopScrubber(
@@ -2034,6 +2215,49 @@ fun StemPlayerScreen(
                     }
                 }
 
+                // Summary Palette of All Chords Used in Track
+                if (uniqueChords.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "All chords in this song (${uniqueChords.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        uniqueChords.forEach { ch ->
+                            val count = chordSegments.count { ChordTransposer.transpose(it.chord, pitchSt) == ch }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = ch,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "${count}×",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(12.dp))
 
                 LazyColumn(
@@ -2107,6 +2331,13 @@ fun StemPlayerScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
+    }
+
+    if (showMetadataSheet) {
+        TrackMetadataSheet(
+            project = project,
+            onDismiss = { showMetadataSheet = false }
+        )
     }
 }
 

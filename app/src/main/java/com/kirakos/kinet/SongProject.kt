@@ -15,7 +15,15 @@ data class SongProject(
     val chordsFile: File,
     val createdAt: Long,
     val category: String = "General",
-    val isFavorite: Boolean = false
+    val isFavorite: Boolean = false,
+    val artist: String = "",
+    val album: String = "",
+    val genre: String = "",
+    val year: String = "",
+    val bitrateKbps: Int = 0,
+    val sampleRate: Int = 44100,
+    val originalFormat: String = "",
+    val originalFileSizeBytes: Long = 0L
 )
 
 data class Playlist(
@@ -56,7 +64,15 @@ class ProjectRepository(private val context: Context) {
                             chordsFile = chords,
                             createdAt = json.optLong("createdAt", folder.lastModified()),
                             category = json.optString("category", "General"),
-                            isFavorite = json.optBoolean("isFavorite", false)
+                            isFavorite = json.optBoolean("isFavorite", false),
+                            artist = json.optString("artist", ""),
+                            album = json.optString("album", ""),
+                            genre = json.optString("genre", ""),
+                            year = json.optString("year", ""),
+                            bitrateKbps = json.optInt("bitrateKbps", 0),
+                            sampleRate = json.optInt("sampleRate", 44100),
+                            originalFormat = json.optString("originalFormat", "WAV Audio"),
+                            originalFileSizeBytes = json.optLong("originalFileSizeBytes", 0L)
                         )
                     )
                 } catch (e: Exception) {
@@ -73,7 +89,15 @@ class ProjectRepository(private val context: Context) {
         durationSeconds: Float,
         tempVocals: File,
         tempAccomp: File,
-        category: String = "General"
+        category: String = "General",
+        artist: String = "",
+        album: String = "",
+        genre: String = "",
+        year: String = "",
+        bitrateKbps: Int = 0,
+        sampleRate: Int = 44100,
+        originalFormat: String = "",
+        originalFileSizeBytes: Long = 0L
     ): SongProject {
         val id = UUID.randomUUID().toString()
         val folder = File(projectsDir, id).apply { mkdirs() }
@@ -102,6 +126,14 @@ class ProjectRepository(private val context: Context) {
             put("createdAt", createdAt)
             put("category", category)
             put("isFavorite", false)
+            put("artist", artist)
+            put("album", album)
+            put("genre", genre)
+            put("year", year)
+            put("bitrateKbps", bitrateKbps)
+            put("sampleRate", sampleRate)
+            put("originalFormat", originalFormat)
+            put("originalFileSizeBytes", originalFileSizeBytes)
         }
 
         File(folder, "meta.json").writeText(metaJson.toString())
@@ -115,7 +147,15 @@ class ProjectRepository(private val context: Context) {
             chordsFile = destChords,
             createdAt = createdAt,
             category = category,
-            isFavorite = false
+            isFavorite = false,
+            artist = artist,
+            album = album,
+            genre = genre,
+            year = year,
+            bitrateKbps = bitrateKbps,
+            sampleRate = sampleRate,
+            originalFormat = originalFormat,
+            originalFileSizeBytes = originalFileSizeBytes
         )
     }
 

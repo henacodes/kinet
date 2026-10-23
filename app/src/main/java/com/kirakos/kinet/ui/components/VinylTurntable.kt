@@ -2,10 +2,10 @@ package com.kirakos.kinet.ui.components
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -14,22 +14,37 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
 import com.kirakos.kinet.ui.theme.*
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * A realistic, industrial-grade rotating Vinyl Turntable with an animated mechanical Tonearm.
- * - When isPlaying is false: tonearm swings back to its rest cradle off the record.
- * - When isPlaying is true: tonearm swings smoothly onto the spinning record and tracks the groove.
+ * A realistic, industrial-grade rotating Vinyl Turntable with an animated mechanical Tonearm
+ * and interactive DJ vinyl scratch / scrub gesture support.
  */
 @Composable
 fun VinylTurntable(
     modifier: Modifier = Modifier,
     isPlaying: Boolean,
-    progress: Float // 0f to 1f
+    progress: Float, // 0f to 1f
+    onScratchStart: () -> Unit = {},
+    onScratch: (deltaDegrees: Float) -> Unit = {},
+    onScratchEnd: () -> Unit = {}
 ) {
+    val currentOnScratchStart by rememberUpdatedState(onScratchStart)
+    val currentOnScratch by rememberUpdatedState(onScratch)
+    val currentOnScratchEnd by rememberUpdatedState(onScratchEnd)
+
+    var manualScratchAngle by remember { mutableStateOf(0f) }
+    var isTouchingPlatter by remember { mutableStateOf(false) }
+    var baseSpinOffset by remember { mutableStateOf(0f) }
+
+    var platterCenterPx by remember { mutableStateOf(Offset.Zero) }
+    var platterRadiusPx by remember { mutableStateOf(0f) }
+
     // 1. Continuous smooth rotation of the vinyl disc when playing (33 1/3 RPM feel)
     val infiniteTransition = rememberInfiniteTransition(label = "vinylSpin")
     val spinAngle by infiniteTransition.animateFloat(
@@ -42,12 +57,18 @@ fun VinylTurntable(
         label = "vinylRotation"
     )
 
-    val currentDiscRotation = if (isPlaying) spinAngle else (progress * 720f) % 360f
+    val currentDiscRotation = if (isTouchingPlatter) {
+        manualScratchAngle
+    } else if (isPlaying) {
+        (spinAngle + baseSpinOffset) % 360f
+    } else {
+        (progress * 720f + baseSpinOffset) % 360f
+    }
 
     // 2. Tonearm angle:
     // Rest position: -18f (parked in cradle to the right of the platter)
     // Active playback: sweeps smoothly from 12f (outer rim) to 34f (inner label) based on song progress
-    val targetTonearmAngle = if (!isPlaying) {
+    val targetTonearmAngle = if (!isPlaying && !isTouchingPlatter) {
         -18f
     } else {
         12f + (progress.coerceIn(0f, 1f) * 22f)
@@ -59,10 +80,61 @@ fun VinylTurntable(
         label = "tonearmSwing"
     )
 
+    val endTouchGesture = {
+        if (isTouchingPlatter) {
+            isTouchingPlatter = false
+            baseSpinOffset = (manualScratchAngle - spinAngle) % 360f
+            if (baseSpinOffset < 0f) baseSpinOffset += 360f
+            currentOnScratchEnd()
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(205.dp),
+            .height(205.dp)
+            .onSizeChanged { intSize ->
+                val w = intSize.width.toFloat()
+                val h = intSize.height.toFloat()
+                platterCenterPx = Offset(w * 0.44f, h * 0.52f)
+                platterRadiusPx = (h * 0.46f).coerceAtMost(w * 0.38f)
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        if (platterRadiusPx > 0f) {
+                            val dx = offset.x - platterCenterPx.x
+                            val dy = offset.y - platterCenterPx.y
+                            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                            if (dist <= platterRadiusPx) {
+                                isTouchingPlatter = true
+                                manualScratchAngle = currentDiscRotation
+                                currentOnScratchStart()
+                            }
+                        }
+                    },
+                    onDrag = { change, dragAmount ->
+                        if (isTouchingPlatter) {
+                            change.consume()
+                            val pos = change.position
+                            val dx = pos.x - platterCenterPx.x
+
+                            // Natural touchscreen DJ turntable scratching:
+                            // Dragging RIGHT = forward scratch, Dragging LEFT = backward scratch.
+                            // Wiggling back and forth horizontally produces perfectly balanced symmetrical deltas (zero drift).
+                            val deltaPx = dragAmount.x + (if (dx > 0) dragAmount.y else -dragAmount.y) * 0.35f
+                            val deltaDeg = deltaPx * 0.5f
+
+                            if (!deltaDeg.isNaN() && !deltaDeg.isInfinite() && kotlin.math.abs(deltaDeg) < 45f) {
+                                manualScratchAngle += deltaDeg
+                                currentOnScratch(deltaDeg)
+                            }
+                        }
+                    },
+                    onDragEnd = { endTouchGesture() },
+                    onDragCancel = { endTouchGesture() }
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {

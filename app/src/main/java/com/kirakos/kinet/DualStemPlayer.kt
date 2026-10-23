@@ -21,6 +21,9 @@ class DualStemPlayer {
     private val channels = 2
     private val frameSizeShorts = 2 // stereo: 1 left, 1 right
 
+    private val audioLock = Any()
+    private val audioScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
     private var audioTrack: AudioTrack? = null
     private var vocalsPcm: ShortArray? = null
     private var accompPcm: ShortArray? = null
@@ -29,6 +32,10 @@ class DualStemPlayer {
     private var playbackJob: Job? = null
     @Volatile private var isPlayingInternal = false
     @Volatile private var currentFrame = 0
+
+    @Volatile private var isScratching = false
+    @Volatile private var wasPlayingBeforeScratch = false
+    private val scratchWriteBuffer = ShortArray(1024 * frameSizeShorts)
 
     // State Flows
     private val _isPlaying = MutableStateFlow(false)
@@ -207,25 +214,61 @@ class DualStemPlayer {
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        val bufSize = maxOf(minBuf * 4, 65536)
+        val bufSize = maxOf(minBuf * 2, 16384)
 
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+        synchronized(audioLock) {
+            try {
+                audioTrack?.stop()
+                audioTrack?.release()
+            } catch (e: Exception) {
+                // ignore
+            }
+            audioTrack = null
+
+            try {
+                audioTrack = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufSize)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+            } catch (e: Exception) {
+                // Fallback without LOW_LATENCY if unsupported by vendor ROM
+                try {
+                    audioTrack = AudioTrack.Builder()
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                .build()
+                        )
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                .setSampleRate(sampleRate)
+                                .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                                .build()
+                        )
+                        .setBufferSizeInBytes(maxOf(minBuf * 4, 32768))
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build()
+                } catch (ex: Exception) {
+                    ex.printStackTrace()
+                }
+            }
+        }
 
         applyPitchParams()
     }
@@ -234,14 +277,27 @@ class DualStemPlayer {
         if (totalFrames == 0 || isPlayingInternal) return
         isPlayingInternal = true
         _isPlaying.value = true
+        isScratching = false
 
-        audioTrack?.play()
-
-        playbackJob = CoroutineScope(Dispatchers.Default).launch {
+        playbackJob?.cancel()
+        playbackJob = audioScope.launch {
             val voc = vocalsPcm ?: return@launch
             val acc = accompPcm ?: return@launch
+            val maxPcmIndex = minOf(voc.size, acc.size) - 2
+            if (maxPcmIndex < 0) return@launch
+
             val chunkSizeFrames = 2048
             val writeBuffer = ShortArray(chunkSizeFrames * frameSizeShorts)
+
+            synchronized(audioLock) {
+                try {
+                    if (audioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        audioTrack?.play()
+                    }
+                } catch (e: Exception) {
+                    // ignore
+                }
+            }
 
             while (isActive && isPlayingInternal) {
                 // Check A/B Loop
@@ -274,12 +330,21 @@ class DualStemPlayer {
 
                 var pcmIdx = currentFrame * frameSizeShorts
                 for (i in 0 until shortsToWrite) {
-                    val vs = voc[pcmIdx + i] * vVol
-                    val asamp = acc[pcmIdx + i] * aVol
+                    val idx = (pcmIdx + i).coerceIn(0, maxPcmIndex + 1)
+                    val vs = voc[idx] * vVol
+                    val asamp = acc[idx] * aVol
                     writeBuffer[i] = (vs + asamp).toInt().coerceIn(-32768, 32767).toShort()
                 }
 
-                audioTrack?.write(writeBuffer, 0, shortsToWrite)
+                synchronized(audioLock) {
+                    if (!isActive || !isPlayingInternal) return@launch
+                    try {
+                        audioTrack?.write(writeBuffer, 0, shortsToWrite)
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }
+
                 currentFrame += framesToWrite
 
                 val currentMs = (currentFrame.toDouble() / sampleRate * 1000).toLong()
@@ -292,11 +357,15 @@ class DualStemPlayer {
         isPlayingInternal = false
         _isPlaying.value = false
         playbackJob?.cancel()
-        try {
-            audioTrack?.pause()
-            audioTrack?.flush()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        audioScope.launch {
+            synchronized(audioLock) {
+                try {
+                    audioTrack?.pause()
+                    audioTrack?.flush()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
         }
     }
 
@@ -317,11 +386,109 @@ class DualStemPlayer {
         _positionMs.value = clampedMs
 
         if (isPlayingInternal) {
-            try {
-                audioTrack?.flush()
-            } catch (e: Exception) {
-                e.printStackTrace()
+            audioScope.launch {
+                synchronized(audioLock) {
+                    try {
+                        audioTrack?.flush()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
             }
+        }
+    }
+
+    fun startScratch() {
+        if (!isScratching) {
+            wasPlayingBeforeScratch = isPlayingInternal || _isPlaying.value
+        }
+        isScratching = true
+        if (isPlayingInternal) {
+            isPlayingInternal = false
+            _isPlaying.value = false
+            playbackJob?.cancel()
+            audioScope.launch {
+                synchronized(audioLock) {
+                    try {
+                        audioTrack?.flush()
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Real-time vinyl scratching with instantaneous hardware audio write.
+     * Moving in reverse reads audio PCM in reverse, creating the authentic analog DJ scratch sound.
+     */
+    fun scratch(deltaDegrees: Float) {
+        val voc = vocalsPcm ?: return
+        val acc = accompPcm ?: return
+        if (totalFrames == 0) return
+
+        val deltaFrames = (deltaDegrees * 220f).toInt()
+        if (deltaFrames == 0) return
+
+        // Prevent scratch from pushing playhead past the track end threshold (which would trigger song reset)
+        val maxSafeFrame = maxOf(0, totalFrames - 2048)
+        val targetFrame = (currentFrame + deltaFrames).coerceIn(0, maxSafeFrame)
+        val framesToRead = kotlin.math.abs(targetFrame - currentFrame)
+        if (framesToRead < 4) return
+
+        val vVol = if (_isVocalsMuted.value) 0f else _vocalsVolume.value
+        val aVol = if (_isAccompMuted.value) 0f else _accompVolume.value
+
+        val bufferCapacityFrames = scratchWriteBuffer.size / frameSizeShorts
+        val actualFrames = minOf(framesToRead, bufferCapacityFrames)
+
+        val isForward = deltaFrames > 0
+        val step = if (isForward) (framesToRead.toFloat() / actualFrames) else -(framesToRead.toFloat() / actualFrames)
+
+        val speed = (framesToRead.toFloat() / actualFrames).coerceIn(0.2f, 3.5f)
+        val scratchGain = (speed * 0.95f).coerceIn(0.5f, 1.25f)
+
+        val maxPcmIndex = minOf(voc.size, acc.size) - 2
+        if (maxPcmIndex < 0) return
+
+        for (i in 0 until actualFrames) {
+            val frameOffset = (currentFrame + (i * step).toInt()).coerceIn(0, totalFrames - 1)
+            val pcmIdx = (frameOffset * frameSizeShorts).coerceIn(0, maxPcmIndex)
+
+            val vsL = voc[pcmIdx] * vVol
+            val asL = acc[pcmIdx] * aVol
+            val vsR = voc[pcmIdx + 1] * vVol
+            val asR = acc[pcmIdx + 1] * aVol
+
+            val outL = ((vsL + asL) * scratchGain).toInt().coerceIn(-32768, 32767).toShort()
+            val outR = ((vsR + asR) * scratchGain).toInt().coerceIn(-32768, 32767).toShort()
+
+            scratchWriteBuffer[i * 2] = outL
+            scratchWriteBuffer[i * 2 + 1] = outR
+        }
+
+        synchronized(audioLock) {
+            try {
+                audioTrack?.let { track ->
+                    if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        track.play()
+                    }
+                    track.write(scratchWriteBuffer, 0, actualFrames * frameSizeShorts)
+                }
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+
+        currentFrame = targetFrame
+        _positionMs.value = (currentFrame.toDouble() / sampleRate * 1000).toLong()
+    }
+
+    fun endScratch() {
+        isScratching = false
+        if (wasPlayingBeforeScratch) {
+            play()
         }
     }
 
@@ -350,15 +517,19 @@ class DualStemPlayer {
     private fun applyPitchParams() {
         val semitones = _pitchSemitones.value
         val pitchFactor = 2.0.pow(semitones / 12.0).toFloat()
-        try {
-            audioTrack?.let {
-                val params = PlaybackParams()
-                    .setPitch(pitchFactor)
-                    .setSpeed(1.0f)
-                it.playbackParams = params
+        audioScope.launch {
+            synchronized(audioLock) {
+                try {
+                    audioTrack?.let {
+                        val params = PlaybackParams()
+                            .setPitch(pitchFactor)
+                            .setSpeed(1.0f)
+                        it.playbackParams = params
+                    }
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to apply pitch params: ${e.message}")
+                }
             }
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to apply pitch params: ${e.message}")
         }
     }
 
@@ -408,13 +579,15 @@ class DualStemPlayer {
     }
 
     private fun releaseAudioTrack() {
-        try {
-            audioTrack?.stop()
-            audioTrack?.release()
-        } catch (e: Exception) {
-            // ignore
+        synchronized(audioLock) {
+            try {
+                audioTrack?.stop()
+                audioTrack?.release()
+            } catch (e: Exception) {
+                // ignore
+            }
+            audioTrack = null
         }
-        audioTrack = null
     }
 
     fun release() {
