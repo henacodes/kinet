@@ -82,20 +82,33 @@ class AudioSeparator(private val context: Context) {
         val audioDuration = c0.size.toFloat() / sampleRate
         Log.i(tag, "Decoded ${c0.size} samples (~${String.format("%.1f", audioDuration)}s)")
 
+        if (c0.size < nFft) {
+            throw IllegalArgumentException("Audio file is too short: minimum length is ${String.format("%.1f", nFft / sampleRate.toFloat())}s.")
+        }
+
         val numFrames = (c0.size - nFft) / hopLength + 1
         if (numFrames <= 0) {
-            throw IllegalArgumentException("Audio too short: minimum duration is ${String.format("%.1f", nFft / sampleRate.toFloat())}s")
+            throw IllegalArgumentException("Audio file is too short: minimum duration is ${String.format("%.1f", nFft / sampleRate.toFloat())}s.")
         }
 
         val totalChunks = (numFrames + chunkSize - 1) / chunkSize
         Log.i(tag, "Total frames: $numFrames, divided into $totalChunks chunk(s)")
 
         // Output audio accumulation arrays
-        val vocalsWav0 = FloatArray(c0.size)
-        val vocalsWav1 = FloatArray(c1.size)
-        val accompWav0 = FloatArray(c0.size)
-        val accompWav1 = FloatArray(c1.size)
-        val windowSum = FloatArray(c0.size)
+        val vocalsWav0: FloatArray
+        val vocalsWav1: FloatArray
+        val accompWav0: FloatArray
+        val accompWav1: FloatArray
+        val windowSum: FloatArray
+        try {
+            vocalsWav0 = FloatArray(c0.size)
+            vocalsWav1 = FloatArray(c1.size)
+            accompWav0 = FloatArray(c0.size)
+            accompWav1 = FloatArray(c1.size)
+            windowSum = FloatArray(c0.size)
+        } catch (e: OutOfMemoryError) {
+            throw IllegalStateException("Track is too long to process in memory on this device. Please try a shorter song.", e)
+        }
 
         // Precompute overlap-add window sum
         for (f in 0 until numFrames) {
@@ -393,10 +406,28 @@ class AudioSeparator(private val context: Context) {
 
     /**
      * Decodes audio directly to disk stream to prevent RAM exhaustion.
+     * Robust against mono/stereo/surround, 16-bit / 32-bit float PCM,
+     * and dynamic sample rate/channel count changes.
      */
     private fun decodeAudioToStereoPcm(uri: Uri): Pair<FloatArray, FloatArray> {
         val extractor = MediaExtractor()
-        extractor.setDataSource(context, uri, null)
+        val pfd = try {
+            context.contentResolver.openFileDescriptor(uri, "r")
+        } catch (e: Exception) {
+            null
+        }
+
+        try {
+            if (pfd != null) {
+                extractor.setDataSource(pfd.fileDescriptor)
+            } else {
+                extractor.setDataSource(context, uri, null)
+            }
+        } catch (e: Exception) {
+            extractor.release()
+            pfd?.close()
+            throw IllegalArgumentException("Cannot open audio source: ${e.localizedMessage ?: "File inaccessible"}")
+        }
 
         var audioTrackIndex = -1
         var format: MediaFormat? = null
@@ -412,17 +443,45 @@ class AudioSeparator(private val context: Context) {
 
         if (audioTrackIndex == -1 || format == null) {
             extractor.release()
-            throw IllegalArgumentException("No audio track found in $uri")
+            pfd?.close()
+            throw IllegalArgumentException("No audio stream found in the selected file.")
         }
 
         extractor.selectTrack(audioTrackIndex)
-        val mime = format.getString(MediaFormat.KEY_MIME)!!
-        val codec = MediaCodec.createDecoderByType(mime)
-        codec.configure(format, null, null, 0)
-        codec.start()
+        val mime = format.getString(MediaFormat.KEY_MIME)
+            ?: throw IllegalArgumentException("Audio stream has unknown format.")
 
-        val sampleRateIn = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-        val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        val codec = try {
+            MediaCodec.createDecoderByType(mime)
+        } catch (e: Exception) {
+            extractor.release()
+            pfd?.close()
+            throw IllegalStateException("Device lacks a decoder for audio format '$mime': ${e.message}")
+        }
+
+        try {
+            codec.configure(format, null, null, 0)
+            codec.start()
+        } catch (e: Exception) {
+            codec.release()
+            extractor.release()
+            pfd?.close()
+            throw IllegalStateException("Failed to configure audio decoder for '$mime': ${e.message}")
+        }
+
+        var sampleRateIn = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+            try { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) } catch (e: Exception) { 44100 }
+        } else 44100
+
+        var channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+            try { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) } catch (e: Exception) { 2 }
+        } else 2
+
+        var isFloatPcm = false
+        if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+            val enc = try { format.getInteger(MediaFormat.KEY_PCM_ENCODING) } catch (e: Exception) { android.media.AudioFormat.ENCODING_PCM_16BIT }
+            isFloatPcm = (enc == android.media.AudioFormat.ENCODING_PCM_FLOAT)
+        }
 
         val tempPcmFile = File(context.cacheDir, "temp_decode.pcm")
         if (tempPcmFile.exists()) tempPcmFile.delete()
@@ -431,90 +490,170 @@ class AudioSeparator(private val context: Context) {
         val fileChannel = fos.channel
         val bufferInfo = MediaCodec.BufferInfo()
         var isEOS = false
+        var eosTryCount = 0
 
         try {
-            while (!isEOS) {
-                val inIndex = codec.dequeueInputBuffer(10000)
-                if (inIndex >= 0) {
-                    val inputBuf = codec.getInputBuffer(inIndex)!!
-                    val sampleSize = extractor.readSampleData(inputBuf, 0)
-                    if (sampleSize < 0) {
-                        codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        isEOS = true
-                    } else {
-                        codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
-                        extractor.advance()
+            while (!isEOS || (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM == 0)) {
+                if (!isEOS) {
+                    val inIndex = codec.dequeueInputBuffer(10000)
+                    if (inIndex >= 0) {
+                        val inputBuf = codec.getInputBuffer(inIndex)
+                        if (inputBuf != null) {
+                            val sampleSize = extractor.readSampleData(inputBuf, 0)
+                            if (sampleSize < 0) {
+                                codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isEOS = true
+                            } else {
+                                codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
                     }
                 }
 
                 var outIndex = codec.dequeueOutputBuffer(bufferInfo, 10000)
-                while (outIndex >= 0) {
-                    val outputBuf = codec.getOutputBuffer(outIndex)!!
-                    outputBuf.position(bufferInfo.offset)
-                    outputBuf.limit(bufferInfo.offset + bufferInfo.size)
-                    fileChannel.write(outputBuf)
+                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val newFormat = codec.outputFormat
+                        Log.i(tag, "Decoder output format changed: $newFormat")
+                        if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                            sampleRateIn = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        }
+                        if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                            channelCount = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        }
+                        if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                            val enc = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            isFloatPcm = (enc == android.media.AudioFormat.ENCODING_PCM_FLOAT)
+                        }
+                        outIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+                        continue
+                    }
 
+                    val outputBuf = codec.getOutputBuffer(outIndex)
+                    if (outputBuf != null && bufferInfo.size > 0) {
+                        outputBuf.position(bufferInfo.offset)
+                        outputBuf.limit(bufferInfo.offset + bufferInfo.size)
+                        fileChannel.write(outputBuf)
+                    }
+
+                    val eosReached = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0)
                     codec.releaseOutputBuffer(outIndex, false)
+
+                    if (eosReached) {
+                        isEOS = true
+                        break
+                    }
+
                     outIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+                }
+
+                if (isEOS) {
+                    eosTryCount++
+                    if (eosTryCount > 60) break // Guard against encoder stall
                 }
             }
         } finally {
-            codec.stop()
-            codec.release()
-            extractor.release()
-            fos.close()
+            try { codec.stop() } catch (e: Exception) {}
+            try { codec.release() } catch (e: Exception) {}
+            try { extractor.release() } catch (e: Exception) {}
+            try { pfd?.close() } catch (e: Exception) {}
+            try { fos.close() } catch (e: Exception) {}
         }
 
-        val totalBytes = tempPcmFile.length()
-        val bytesPerFrame = channelCount * 2
-        val numInputFrames = (totalBytes / bytesPerFrame).toInt()
+        channelCount = maxOf(1, channelCount)
+        sampleRateIn = maxOf(8000, sampleRateIn)
 
-        val pcmStream = tempPcmFile.inputStream().buffered(65536)
-        val readBuf = ByteArray(65536)
+        val bytesPerSample = if (isFloatPcm) 4 else 2
+        val bytesPerFrame = channelCount * bytesPerSample
+        val totalBytes = tempPcmFile.length()
+
+        if (totalBytes < bytesPerFrame * 2) {
+            tempPcmFile.delete()
+            throw IllegalArgumentException("Audio file contains no playable audio data.")
+        }
+
+        val numInputFrames = (totalBytes / bytesPerFrame).toInt()
+        val c0: FloatArray
+        val c1: FloatArray
+        try {
+            c0 = FloatArray(numInputFrames)
+            c1 = FloatArray(numInputFrames)
+        } catch (e: OutOfMemoryError) {
+            tempPcmFile.delete()
+            throw IllegalStateException("Track is too long to decode in device memory. Please choose a shorter track.", e)
+        }
+
+        val framesPerChunk = 4096
+        val chunkBytes = framesPerChunk * bytesPerFrame
+        val readBuf = ByteArray(chunkBytes)
         val byteBuf = ByteBuffer.wrap(readBuf).order(ByteOrder.LITTLE_ENDIAN)
 
-        val c0 = FloatArray(numInputFrames)
-        val c1 = FloatArray(numInputFrames)
-
         var frameIdx = 0
-        var bytesRead = pcmStream.read(readBuf)
-        while (bytesRead > 0 && frameIdx < numInputFrames) {
-            byteBuf.position(0)
-            byteBuf.limit(bytesRead)
-            val shortsAvailable = bytesRead / 2
-            var shortPos = 0
-            while (shortPos + channelCount <= shortsAvailable && frameIdx < numInputFrames) {
-                val s0 = byteBuf.short / 32768.0f
-                val s1 = if (channelCount > 1) byteBuf.short / 32768.0f else s0
-                for (ch in 2 until channelCount) byteBuf.short
+        try {
+            tempPcmFile.inputStream().buffered(65536).use { pcmStream ->
+                while (frameIdx < numInputFrames) {
+                    var bytesRead = 0
+                    while (bytesRead < chunkBytes) {
+                        val r = pcmStream.read(readBuf, bytesRead, chunkBytes - bytesRead)
+                        if (r < 0) break
+                        bytesRead += r
+                    }
+                    val framesInThisRead = bytesRead / bytesPerFrame
+                    if (framesInThisRead == 0) break
 
-                c0[frameIdx] = s0
-                c1[frameIdx] = s1
-                frameIdx++
-                shortPos += channelCount
+                    byteBuf.position(0)
+                    byteBuf.limit(framesInThisRead * bytesPerFrame)
+                    for (f in 0 until framesInThisRead) {
+                        if (frameIdx >= numInputFrames) break
+                        val s0: Float
+                        val s1: Float
+                        if (isFloatPcm) {
+                            s0 = byteBuf.float
+                            s1 = if (channelCount > 1) byteBuf.float else s0
+                            for (ch in 2 until channelCount) byteBuf.float
+                        } else {
+                            s0 = byteBuf.short / 32768.0f
+                            s1 = if (channelCount > 1) byteBuf.short / 32768.0f else s0
+                            for (ch in 2 until channelCount) byteBuf.short
+                        }
+                        c0[frameIdx] = s0.coerceIn(-1.0f, 1.0f)
+                        c1[frameIdx] = s1.coerceIn(-1.0f, 1.0f)
+                        frameIdx++
+                    }
+                }
             }
-            bytesRead = pcmStream.read(readBuf)
+        } finally {
+            tempPcmFile.delete()
         }
-        pcmStream.close()
-        tempPcmFile.delete()
+
+        val actualC0 = if (frameIdx < numInputFrames) c0.copyOf(frameIdx) else c0
+        val actualC1 = if (frameIdx < numInputFrames) c1.copyOf(frameIdx) else c1
 
         // Resample if not 44.1 kHz
-        if (sampleRateIn != sampleRate && c0.isNotEmpty()) {
+        if (sampleRateIn != sampleRate && actualC0.size >= 2) {
             val ratio = sampleRate.toDouble() / sampleRateIn
-            val newLen = (c0.size * ratio).toInt()
-            val newC0 = FloatArray(newLen)
-            val newC1 = FloatArray(newLen)
+            val newLen = maxOf(2, (actualC0.size * ratio).toInt())
+            val newC0: FloatArray
+            val newC1: FloatArray
+            try {
+                newC0 = FloatArray(newLen)
+                newC1 = FloatArray(newLen)
+            } catch (e: OutOfMemoryError) {
+                throw IllegalStateException("Ran out of memory while resampling audio.", e)
+            }
+            val maxSrc = actualC0.size - 2
             for (i in 0 until newLen) {
                 val srcIdx = i / ratio
-                val i0 = srcIdx.toInt().coerceIn(0, c0.size - 2)
-                val frac = (srcIdx - i0).toFloat()
-                newC0[i] = c0[i0] + frac * (c0[i0 + 1] - c0[i0])
-                newC1[i] = c1[i0] + frac * (c1[i0 + 1] - c1[i0])
+                val i0 = srcIdx.toInt().coerceIn(0, maxSrc)
+                val frac = (srcIdx - i0).toFloat().coerceIn(0f, 1f)
+                newC0[i] = actualC0[i0] + frac * (actualC0[i0 + 1] - actualC0[i0])
+                newC1[i] = actualC1[i0] + frac * (actualC1[i0 + 1] - actualC1[i0])
             }
             return Pair(newC0, newC1)
         }
 
-        return Pair(c0, c1)
+        return Pair(actualC0, actualC1)
     }
 
     private fun writeWav16BitStereo(file: File, c0: FloatArray, c1: FloatArray, sampleRate: Int) {

@@ -67,7 +67,16 @@ class DualStemPlayer {
     private val _waveform = MutableStateFlow<FloatArray>(FloatArray(0))
     val waveform: StateFlow<FloatArray> = _waveform.asStateFlow()
 
+    private val _chordSegments = MutableStateFlow<List<ChordSegment>>(emptyList())
+    val chordSegments: StateFlow<List<ChordSegment>> = _chordSegments.asStateFlow()
+
+    private var chordJob: Job? = null
+
+    var loadedProject: SongProject? = null
+        private set
+
     fun load(project: SongProject) {
+        loadedProject = project
         stop()
         releaseAudioTrack()
 
@@ -93,7 +102,74 @@ class DualStemPlayer {
 
         computeWaveform()
 
+        chordJob?.cancel()
+        _chordSegments.value = emptyList()
+
+        chordJob = CoroutineScope(Dispatchers.Default).launch {
+            if (project.chordsFile.exists()) {
+                try {
+                    val json = project.chordsFile.readText()
+                    val parsed = ChordDetector.deserializeChords(json)
+                    val hasBuggySeventhChords = parsed.any { it.chord.contains("7") }
+                    if (parsed.isNotEmpty() && !hasBuggySeventhChords) {
+                        _chordSegments.value = parsed
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            val pcm = accompPcm
+            val detector = ChordDetector()
+            val detected = if (pcm != null && pcm.isNotEmpty()) {
+                detector.detectChordsFromStereoPcm(pcm)
+            } else {
+                detector.detectChordsFromWav(project.accompanimentFile)
+            }
+
+            if (isActive && detected.isNotEmpty()) {
+                _chordSegments.value = detected
+                try {
+                    project.chordsFile.writeText(ChordDetector.serializeChords(detected))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
         initAudioTrack()
+    }
+
+    fun reanalyzeChords(project: SongProject) {
+        chordJob?.cancel()
+        _chordSegments.value = emptyList()
+        try {
+            if (project.chordsFile.exists()) {
+                project.chordsFile.delete()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        chordJob = CoroutineScope(Dispatchers.Default).launch {
+            val pcm = accompPcm
+            val detector = ChordDetector()
+            val detected = if (pcm != null && pcm.isNotEmpty()) {
+                detector.detectChordsFromStereoPcm(pcm)
+            } else {
+                detector.detectChordsFromWav(project.accompanimentFile)
+            }
+
+            if (isActive && detected.isNotEmpty()) {
+                _chordSegments.value = detected
+                try {
+                    project.chordsFile.writeText(ChordDetector.serializeChords(detected))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
     }
 
     private fun computeWaveform() {
@@ -343,6 +419,8 @@ class DualStemPlayer {
 
     fun release() {
         stop()
+        chordJob?.cancel()
+        _chordSegments.value = emptyList()
         releaseAudioTrack()
         vocalsPcm = null
         accompPcm = null

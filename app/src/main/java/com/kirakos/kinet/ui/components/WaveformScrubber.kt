@@ -1,22 +1,31 @@
 package com.kirakos.kinet.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kirakos.kinet.ChordSegment
+import com.kirakos.kinet.ChordTransposer
 import com.kirakos.kinet.ui.theme.*
 import java.util.Locale
 
@@ -29,6 +38,9 @@ fun WaveformLoopScrubber(
     loopStartMs: Long?,
     loopEndMs: Long?,
     isLooping: Boolean,
+    chordSegments: List<ChordSegment> = emptyList(),
+    pitchSemitones: Int = 0,
+    showChords: Boolean = true,
     onSeekTo: (Long) -> Unit
 ) {
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
@@ -46,7 +58,7 @@ fun WaveformLoopScrubber(
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(68.dp)
+                .height(52.dp)
                 .pointerInput(durationMs) {
                     awaitEachGesture {
                         fun updateSeek(px: Float) {
@@ -117,7 +129,7 @@ fun WaveformLoopScrubber(
                 )
             }
 
-            // 3. Loop Brackets [   ] (from screenshot.png)
+            // 3. Loop Brackets [   ]
             // Left Bracket [ (Point A)
             if (loopAProgress != null) {
                 val xA = width * loopAProgress
