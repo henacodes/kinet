@@ -1894,7 +1894,7 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Version 0.2.0",
+                        text = "Version 0.2.1",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

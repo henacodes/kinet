@@ -60,7 +60,7 @@ object CrashReporter {
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Android OS: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             appendLine("RAM: Free ${freeMemoryMb}MB / Total ${totalMemoryMb}MB / Max ${maxMemoryMb}MB")
-            appendLine("App Version: 0.2.0")
+            appendLine("App Version: 0.2.1")
             appendLine("━━━━━━━━━━━━━━━━━━━━━━━━━")
             appendLine("Stack Trace:")
             appendLine(stackTrace.take(3500))

@@ -196,7 +196,7 @@ fun PitchRollerControl(
                 onDragAbsolute = { totalDx, initialSemitone ->
                     isDragging = true
                     val pxPerSemitone = 38f
-                    val newTarget = (initialSemitone + (totalDx / pxPerSemitone)).coerceIn(-6f, 6f)
+                    val newTarget = (initialSemitone - (totalDx / pxPerSemitone)).coerceIn(-6f, 6f)
                     val oldInt = dragSemitone.roundToInt()
                     val newInt = newTarget.roundToInt().coerceIn(-6, 6)
                     dragSemitone = newTarget
