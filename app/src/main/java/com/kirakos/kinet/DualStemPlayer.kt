@@ -26,6 +26,9 @@ class DualStemPlayer {
 
     private var audioTrack: AudioTrack? = null
     private var vocalsPcm: ShortArray? = null
+    private var drumsPcm: ShortArray? = null
+    private var bassPcm: ShortArray? = null
+    private var otherPcm: ShortArray? = null
     private var accompPcm: ShortArray? = null
     private var totalFrames: Int = 0
 
@@ -47,17 +50,50 @@ class DualStemPlayer {
     private val _durationMs = MutableStateFlow(0L)
     val durationMs: StateFlow<Long> = _durationMs.asStateFlow()
 
+    // 4-Stem Volumes
     private val _vocalsVolume = MutableStateFlow(1.0f)
     val vocalsVolume: StateFlow<Float> = _vocalsVolume.asStateFlow()
+
+    private val _drumsVolume = MutableStateFlow(1.0f)
+    val drumsVolume: StateFlow<Float> = _drumsVolume.asStateFlow()
+
+    private val _bassVolume = MutableStateFlow(1.0f)
+    val bassVolume: StateFlow<Float> = _bassVolume.asStateFlow()
+
+    private val _otherVolume = MutableStateFlow(1.0f)
+    val otherVolume: StateFlow<Float> = _otherVolume.asStateFlow()
 
     private val _accompVolume = MutableStateFlow(1.0f)
     val accompVolume: StateFlow<Float> = _accompVolume.asStateFlow()
 
+    // 4-Stem Mutes
     private val _isVocalsMuted = MutableStateFlow(false)
     val isVocalsMuted: StateFlow<Boolean> = _isVocalsMuted.asStateFlow()
 
+    private val _isDrumsMuted = MutableStateFlow(false)
+    val isDrumsMuted: StateFlow<Boolean> = _isDrumsMuted.asStateFlow()
+
+    private val _isBassMuted = MutableStateFlow(false)
+    val isBassMuted: StateFlow<Boolean> = _isBassMuted.asStateFlow()
+
+    private val _isOtherMuted = MutableStateFlow(false)
+    val isOtherMuted: StateFlow<Boolean> = _isOtherMuted.asStateFlow()
+
     private val _isAccompMuted = MutableStateFlow(false)
     val isAccompMuted: StateFlow<Boolean> = _isAccompMuted.asStateFlow()
+
+    // 4-Stem Solos
+    private val _isVocalsSolo = MutableStateFlow(false)
+    val isVocalsSolo: StateFlow<Boolean> = _isVocalsSolo.asStateFlow()
+
+    private val _isDrumsSolo = MutableStateFlow(false)
+    val isDrumsSolo: StateFlow<Boolean> = _isDrumsSolo.asStateFlow()
+
+    private val _isBassSolo = MutableStateFlow(false)
+    val isBassSolo: StateFlow<Boolean> = _isBassSolo.asStateFlow()
+
+    private val _isOtherSolo = MutableStateFlow(false)
+    val isOtherSolo: StateFlow<Boolean> = _isOtherSolo.asStateFlow()
 
     private val _pitchSemitones = MutableStateFlow(0)
     val pitchSemitones: StateFlow<Int> = _pitchSemitones.asStateFlow()
@@ -82,8 +118,12 @@ class DualStemPlayer {
     var loadedProject: SongProject? = null
         private set
 
+    private val _currentProject = MutableStateFlow<SongProject?>(null)
+    val currentProject: StateFlow<SongProject?> = _currentProject.asStateFlow()
+
     fun load(project: SongProject) {
         loadedProject = project
+        _currentProject.value = project
         stop()
         releaseAudioTrack()
 
@@ -92,6 +132,9 @@ class DualStemPlayer {
 
         vocalsPcm = readWavShorts(vocFile)
         accompPcm = readWavShorts(accFile)
+        drumsPcm = project.drumsFile?.let { if (it.exists()) readWavShorts(it) else null }
+        bassPcm = project.bassFile?.let { if (it.exists()) readWavShorts(it) else null }
+        otherPcm = project.otherFile?.let { if (it.exists()) readWavShorts(it) else null }
 
         val vLen = (vocalsPcm?.size ?: 0) / frameSizeShorts
         val aLen = (accompPcm?.size ?: 0) / frameSizeShorts
@@ -106,6 +149,24 @@ class DualStemPlayer {
         _loopEndMs.value = null
         _isLooping.value = false
         _pitchSemitones.value = 0
+
+        // Reset volume and mute/solo states
+        _vocalsVolume.value = 1.0f
+        _drumsVolume.value = 1.0f
+        _bassVolume.value = 1.0f
+        _otherVolume.value = 1.0f
+        _accompVolume.value = 1.0f
+
+        _isVocalsMuted.value = false
+        _isDrumsMuted.value = false
+        _isBassMuted.value = false
+        _isOtherMuted.value = false
+        _isAccompMuted.value = false
+
+        _isVocalsSolo.value = false
+        _isDrumsSolo.value = false
+        _isBassSolo.value = false
+        _isOtherSolo.value = false
 
         computeWaveform()
 
@@ -283,6 +344,11 @@ class DualStemPlayer {
         playbackJob = audioScope.launch {
             val voc = vocalsPcm ?: return@launch
             val acc = accompPcm ?: return@launch
+            val drums = drumsPcm
+            val bass = bassPcm
+            val other = otherPcm
+            val isFourStem = drums != null && bass != null && other != null
+
             val maxPcmIndex = minOf(voc.size, acc.size) - 2
             if (maxPcmIndex < 0) return@launch
 
@@ -308,7 +374,7 @@ class DualStemPlayer {
                 val loopEndFrame = if (isLoopActive) ((loopEnd / 1000.0) * sampleRate).toInt() else totalFrames
                 val loopStartFrame = if (isLoopActive) ((loopStart / 1000.0) * sampleRate).toInt().coerceIn(0, totalFrames) else 0
 
-                if (currentFrame >= loopEndFrame || currentFrame >= totalFrames) {
+                if (currentFrame >= loopEndFrame || currentFrame >= totalFrames || (isLoopActive && currentFrame < loopStartFrame)) {
                     if (isLoopActive) {
                         currentFrame = loopStartFrame
                     } else {
@@ -325,15 +391,22 @@ class DualStemPlayer {
                 val framesToWrite = minOf(chunkSizeFrames, loopEndFrame - currentFrame)
                 val shortsToWrite = framesToWrite * frameSizeShorts
 
-                val vVol = if (_isVocalsMuted.value) 0f else _vocalsVolume.value
-                val aVol = if (_isAccompMuted.value) 0f else _accompVolume.value
+                val anySolo = _isVocalsSolo.value || _isDrumsSolo.value || _isBassSolo.value || _isOtherSolo.value
+                val vVol = if (anySolo) (if (_isVocalsSolo.value) _vocalsVolume.value else 0f) else (if (_isVocalsMuted.value) 0f else _vocalsVolume.value)
+                val dVol = if (anySolo) (if (_isDrumsSolo.value) _drumsVolume.value else 0f) else (if (_isDrumsMuted.value) 0f else _drumsVolume.value)
+                val bVol = if (anySolo) (if (_isBassSolo.value) _bassVolume.value else 0f) else (if (_isBassMuted.value) 0f else _bassVolume.value)
+                val oVol = if (anySolo) (if (_isOtherSolo.value) _otherVolume.value else 0f) else (if (_isOtherMuted.value) 0f else _otherVolume.value)
+                val aVol = if (anySolo) 0f else (if (_isAccompMuted.value) 0f else _accompVolume.value)
 
                 var pcmIdx = currentFrame * frameSizeShorts
                 for (i in 0 until shortsToWrite) {
                     val idx = (pcmIdx + i).coerceIn(0, maxPcmIndex + 1)
-                    val vs = voc[idx] * vVol
-                    val asamp = acc[idx] * aVol
-                    writeBuffer[i] = (vs + asamp).toInt().coerceIn(-32768, 32767).toShort()
+                    val mixed = if (drums != null && bass != null && other != null) {
+                        voc[idx] * vVol + drums[idx] * dVol + bass[idx] * bVol + other[idx] * oVol
+                    } else {
+                        voc[idx] * vVol + acc[idx] * aVol
+                    }
+                    writeBuffer[i] = mixed.toInt().coerceIn(-32768, 32767).toShort()
                 }
 
                 synchronized(audioLock) {
@@ -379,8 +452,22 @@ class DualStemPlayer {
         _positionMs.value = 0L
     }
 
+    fun clearProject() {
+        stop()
+        loadedProject = null
+        _currentProject.value = null
+    }
+
     fun seekTo(targetMs: Long) {
-        val clampedMs = targetMs.coerceIn(0L, _durationMs.value)
+        val loopStart = _loopStartMs.value
+        val loopEnd = _loopEndMs.value
+        val isLoopActive = _isLooping.value && loopStart != null && loopEnd != null && loopEnd > loopStart
+
+        val clampedMs = if (isLoopActive) {
+            targetMs.coerceIn(loopStart, loopEnd)
+        } else {
+            targetMs.coerceIn(0L, _durationMs.value)
+        }
         val targetFrame = ((clampedMs / 1000.0) * sampleRate).toInt().coerceIn(0, totalFrames)
         currentFrame = targetFrame
         _positionMs.value = clampedMs
@@ -395,6 +482,19 @@ class DualStemPlayer {
                     }
                 }
             }
+        }
+    }
+
+    fun seekRelative(deltaMs: Long) {
+        seekTo(_positionMs.value + deltaMs)
+    }
+
+    fun jumpToLoopStart() {
+        val loopStart = _loopStartMs.value
+        if (loopStart != null) {
+            seekTo(loopStart)
+        } else {
+            seekTo(0L)
         }
     }
 
@@ -426,19 +526,32 @@ class DualStemPlayer {
     fun scratch(deltaDegrees: Float) {
         val voc = vocalsPcm ?: return
         val acc = accompPcm ?: return
+        val drums = drumsPcm
+        val bass = bassPcm
+        val other = otherPcm
+        val isFourStem = drums != null && bass != null && other != null
         if (totalFrames == 0) return
 
         val deltaFrames = (deltaDegrees * 220f).toInt()
         if (deltaFrames == 0) return
 
-        // Prevent scratch from pushing playhead past the track end threshold (which would trigger song reset)
-        val maxSafeFrame = maxOf(0, totalFrames - 2048)
-        val targetFrame = (currentFrame + deltaFrames).coerceIn(0, maxSafeFrame)
+        // Prevent scratch from pushing playhead past the loop bounds (or track end threshold)
+        val loopStart = _loopStartMs.value
+        val loopEnd = _loopEndMs.value
+        val isLoopActive = _isLooping.value && loopStart != null && loopEnd != null && loopEnd > loopStart
+
+        val minSafeFrame = if (isLoopActive) ((loopStart / 1000.0) * sampleRate).toInt().coerceIn(0, totalFrames) else 0
+        val maxSafeFrame = if (isLoopActive) ((loopEnd / 1000.0) * sampleRate).toInt().coerceIn(0, totalFrames) else maxOf(0, totalFrames - 2048)
+        val targetFrame = (currentFrame + deltaFrames).coerceIn(minSafeFrame, maxSafeFrame)
         val framesToRead = kotlin.math.abs(targetFrame - currentFrame)
         if (framesToRead < 4) return
 
-        val vVol = if (_isVocalsMuted.value) 0f else _vocalsVolume.value
-        val aVol = if (_isAccompMuted.value) 0f else _accompVolume.value
+        val anySolo = _isVocalsSolo.value || _isDrumsSolo.value || _isBassSolo.value || _isOtherSolo.value
+        val vVol = if (anySolo) (if (_isVocalsSolo.value) _vocalsVolume.value else 0f) else (if (_isVocalsMuted.value) 0f else _vocalsVolume.value)
+        val dVol = if (anySolo) (if (_isDrumsSolo.value) _drumsVolume.value else 0f) else (if (_isDrumsMuted.value) 0f else _drumsVolume.value)
+        val bVol = if (anySolo) (if (_isBassSolo.value) _bassVolume.value else 0f) else (if (_isBassMuted.value) 0f else _bassVolume.value)
+        val oVol = if (anySolo) (if (_isOtherSolo.value) _otherVolume.value else 0f) else (if (_isOtherMuted.value) 0f else _otherVolume.value)
+        val aVol = if (anySolo) 0f else (if (_isAccompMuted.value) 0f else _accompVolume.value)
 
         val bufferCapacityFrames = scratchWriteBuffer.size / frameSizeShorts
         val actualFrames = minOf(framesToRead, bufferCapacityFrames)
@@ -456,16 +569,20 @@ class DualStemPlayer {
             val frameOffset = (currentFrame + (i * step).toInt()).coerceIn(0, totalFrames - 1)
             val pcmIdx = (frameOffset * frameSizeShorts).coerceIn(0, maxPcmIndex)
 
-            val vsL = voc[pcmIdx] * vVol
-            val asL = acc[pcmIdx] * aVol
-            val vsR = voc[pcmIdx + 1] * vVol
-            val asR = acc[pcmIdx + 1] * aVol
+            val mixedL = if (drums != null && bass != null && other != null) {
+                voc[pcmIdx] * vVol + drums[pcmIdx] * dVol + bass[pcmIdx] * bVol + other[pcmIdx] * oVol
+            } else {
+                voc[pcmIdx] * vVol + acc[pcmIdx] * aVol
+            }
 
-            val outL = ((vsL + asL) * scratchGain).toInt().coerceIn(-32768, 32767).toShort()
-            val outR = ((vsR + asR) * scratchGain).toInt().coerceIn(-32768, 32767).toShort()
+            val mixedR = if (drums != null && bass != null && other != null) {
+                voc[pcmIdx + 1] * vVol + drums[pcmIdx + 1] * dVol + bass[pcmIdx + 1] * bVol + other[pcmIdx + 1] * oVol
+            } else {
+                voc[pcmIdx + 1] * vVol + acc[pcmIdx + 1] * aVol
+            }
 
-            scratchWriteBuffer[i * 2] = outL
-            scratchWriteBuffer[i * 2 + 1] = outR
+            scratchWriteBuffer[i * 2] = (mixedL * scratchGain).toInt().coerceIn(-32768, 32767).toShort()
+            scratchWriteBuffer[i * 2 + 1] = (mixedR * scratchGain).toInt().coerceIn(-32768, 32767).toShort()
         }
 
         synchronized(audioLock) {
@@ -496,6 +613,18 @@ class DualStemPlayer {
         _vocalsVolume.value = volume.coerceIn(0f, 1f)
     }
 
+    fun setDrumsVolume(volume: Float) {
+        _drumsVolume.value = volume.coerceIn(0f, 1f)
+    }
+
+    fun setBassVolume(volume: Float) {
+        _bassVolume.value = volume.coerceIn(0f, 1f)
+    }
+
+    fun setOtherVolume(volume: Float) {
+        _otherVolume.value = volume.coerceIn(0f, 1f)
+    }
+
     fun setAccompanimentVolume(volume: Float) {
         _accompVolume.value = volume.coerceIn(0f, 1f)
     }
@@ -504,8 +633,36 @@ class DualStemPlayer {
         _isVocalsMuted.value = !_isVocalsMuted.value
     }
 
+    fun toggleDrumsMute() {
+        _isDrumsMuted.value = !_isDrumsMuted.value
+    }
+
+    fun toggleBassMute() {
+        _isBassMuted.value = !_isBassMuted.value
+    }
+
+    fun toggleOtherMute() {
+        _isOtherMuted.value = !_isOtherMuted.value
+    }
+
     fun toggleAccompanimentMute() {
         _isAccompMuted.value = !_isAccompMuted.value
+    }
+
+    fun toggleVocalsSolo() {
+        _isVocalsSolo.value = !_isVocalsSolo.value
+    }
+
+    fun toggleDrumsSolo() {
+        _isDrumsSolo.value = !_isDrumsSolo.value
+    }
+
+    fun toggleBassSolo() {
+        _isBassSolo.value = !_isBassSolo.value
+    }
+
+    fun toggleOtherSolo() {
+        _isOtherSolo.value = !_isOtherSolo.value
     }
 
     fun setPitchSemitones(semitones: Int) {
@@ -596,6 +753,9 @@ class DualStemPlayer {
         _chordSegments.value = emptyList()
         releaseAudioTrack()
         vocalsPcm = null
+        drumsPcm = null
+        bassPcm = null
+        otherPcm = null
         accompPcm = null
     }
 }

@@ -20,3 +20,11 @@ val StoneTextMuted = Color(0xFF736A62)       // Secondary labels, subtitles
 val StoneBorder = Color(0xFFB5A699)          // Subtle 1px hardware panel seams
 val SignalRed = Color(0xFFD94841)            // Mute / error indicator
 val TapeBrown = Color(0xFF523326)            // Magnetic tape pack
+
+// 4-Stem Deck Accents
+val StemVocalsCoral = Color(0xFFD97757)     // Warm Terracotta / Coral
+val StemDrumsAmber = Color(0xFFE5A93B)      // Punchy Warm Amber / Gold
+val StemBassTeal = Color(0xFF2E9990)        // Deep Studio Teal / Cyan
+val StemOtherLavender = Color(0xFF9070C0)   // Electric Lavender / Soft Violet
+val StemSoloActive = Color(0xFFE5A93B)      // Solo LED indicator (amber)
+val StemMuteActive = Color(0xFFD94841)      // Mute LED indicator (signal red)

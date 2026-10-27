@@ -1,0 +1,60 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="36dp"
+    android:height="34dp"
+    android:viewportWidth="36"
+    android:viewportHeight="34">
+
+    <!-- Equalizer Waveform ኪ (Ki) Brandmark -->
+    <!-- Left Pillar (Vocals - Warm Terracotta #D97757) -->
+    <path
+        android:strokeColor="#D97757"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M2.0,2.0 L2.0,28.0" />
+    <path
+        android:strokeColor="#D97757"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M6.0,6.5 L6.0,28.0" />
+
+    <!-- Roof Bridge Bars (Master Mix - Dark Carbon #1A1715) -->
+    <path
+        android:strokeColor="#1A1715"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M10.0,6.5 L10.0,11.8" />
+    <path
+        android:strokeColor="#1A1715"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M14.0,6.5 L14.0,11.8" />
+    <path
+        android:strokeColor="#1A1715"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M18.0,6.5 L18.0,11.8" />
+
+    <!-- Right Pillar (Accompaniment - Dark Carbon #1A1715) -->
+    <path
+        android:strokeColor="#1A1715"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M22.0,6.5 L22.0,28.0" />
+    <path
+        android:strokeColor="#1A1715"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M26.0,6.5 L26.0,28.0" />
+
+    <!-- Vowel Branch of ኪ (Pulse Node - Warm Terracotta #D97757) -->
+    <path
+        android:strokeColor="#D97757"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M30.0,22.3 L30.0,28.0" />
+    <path
+        android:strokeColor="#D97757"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M34.0,17.5 L34.0,32.8" />
+</vector>

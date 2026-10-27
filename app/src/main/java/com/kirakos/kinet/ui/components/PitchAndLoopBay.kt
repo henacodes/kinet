@@ -53,7 +53,8 @@ fun PitchAndLoopBay(
     isLooping: Boolean,
     onSetLoopA: () -> Unit,
     onSetLoopB: () -> Unit,
-    onClearLoop: () -> Unit
+    onClearLoop: () -> Unit,
+    onJumpToA: () -> Unit = {}
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -75,6 +76,7 @@ fun PitchAndLoopBay(
             onSetLoopA = onSetLoopA,
             onSetLoopB = onSetLoopB,
             onClearLoop = onClearLoop,
+            onJumpToA = onJumpToA,
             modifier = Modifier.weight(1f)
         )
     }
@@ -341,7 +343,7 @@ fun MagneticRollerCanvas(
 
 /**
  * Unified Segmented Hardware Loop Capsule:
- * - Single seamless housing [ A | Off | B ] with flush tactile segments.
+ * - Single seamless housing [ A | B | To A | Off ] with flush tactile segments.
  * - Replaces clunky separate buttons with an integrated hardware module.
  */
 @Composable
@@ -352,6 +354,7 @@ fun LoopControlSection(
     onSetLoopA: () -> Unit,
     onSetLoopB: () -> Unit,
     onClearLoop: () -> Unit,
+    onJumpToA: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isAnyLoopSet = loopStartMs != null || loopEndMs != null
@@ -387,7 +390,7 @@ fun LoopControlSection(
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Unified Segmented Capsule: [ A | Off | B ]
+        // Unified Segmented Capsule: [ A | B | To A | Off ]
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -425,30 +428,6 @@ fun LoopControlSection(
                         .background(dividerColor)
                 )
 
-                // Segment [ Off ] in the middle
-                Box(
-                    modifier = Modifier
-                        .weight(1.1f)
-                        .fillMaxHeight()
-                        .clickable(enabled = isAnyLoopSet) { onClearLoop() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Off",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Normal,
-                        color = if (isAnyLoopSet) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                    )
-                }
-
-                // Vertical Hairline Seam
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .fillMaxHeight(0.55f)
-                        .background(dividerColor)
-                )
-
                 // Segment [ B ]
                 Box(
                     modifier = Modifier
@@ -463,6 +442,55 @@ fun LoopControlSection(
                         fontSize = 12.sp,
                         fontWeight = if (loopEndMs != null) FontWeight.Medium else FontWeight.Normal,
                         color = if (loopEndMs != null) CreamOffWhite else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Vertical Hairline Seam
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .fillMaxHeight(0.55f)
+                        .background(dividerColor)
+                )
+
+                // Segment [ To A ]
+                val canJumpToA = loopStartMs != null
+                Box(
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .fillMaxHeight()
+                        .clickable(enabled = canJumpToA) { onJumpToA() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "To A",
+                        fontSize = 11.sp,
+                        fontWeight = if (canJumpToA) FontWeight.Medium else FontWeight.Normal,
+                        color = if (canJumpToA) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                    )
+                }
+
+                // Vertical Hairline Seam
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .fillMaxHeight(0.55f)
+                        .background(dividerColor)
+                )
+
+                // Segment [ Off ]
+                Box(
+                    modifier = Modifier
+                        .weight(1.05f)
+                        .fillMaxHeight()
+                        .clickable(enabled = isAnyLoopSet) { onClearLoop() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Off",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal,
+                        color = if (isAnyLoopSet) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
                     )
                 }
             }

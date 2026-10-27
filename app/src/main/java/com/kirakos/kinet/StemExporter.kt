@@ -212,4 +212,35 @@ object StemExporter {
             Toast.makeText(context, "Could not share stems: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
+
+    fun shareMultipleStems(
+        context: Context,
+        files: List<File>,
+        displayTitle: String,
+        format: ExportFormat
+    ) {
+        try {
+            val uris = ArrayList(files.map { file ->
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file
+                )
+            })
+
+            val shareIntent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = format.mimeType
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                putExtra(Intent.EXTRA_SUBJECT, "$displayTitle - All Stems")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            val chooser = Intent.createChooser(shareIntent, "Share stems via")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(context, "Could not share stems: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
 }

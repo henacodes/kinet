@@ -1,0 +1,111 @@
+name: Build & Release Kinet
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release (e.g. v0.2.0)'
+        required: false
+        default: 'v0.2.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Grant Execute Permission to Gradlew
+        run: chmod +x ./gradlew
+
+      - name: Determine Release Tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "Building Kinet release for tag: $TAG"
+
+      - name: Build Release APKs (Universal & ABI splits)
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Build Release App Bundle (AAB)
+        run: ./gradlew bundleRelease --stacktrace
+
+      - name: Prepare & Organize Release Artifacts
+        run: |
+          TAG="${{ steps.vars.outputs.TAG }}"
+          mkdir -p release-artifacts
+
+          # Copy and rename APKs
+          if [ -f app/build/outputs/apk/release/app-universal-release.apk ]; then
+            cp app/build/outputs/apk/release/app-universal-release.apk "release-artifacts/kinet-${TAG}-universal.apk"
+          fi
+          if [ -f app/build/outputs/apk/release/app-arm64-v8a-release.apk ]; then
+            cp app/build/outputs/apk/release/app-arm64-v8a-release.apk "release-artifacts/kinet-${TAG}-arm64-v8a.apk"
+          fi
+          if [ -f app/build/outputs/apk/release/app-armeabi-v7a-release.apk ]; then
+            cp app/build/outputs/apk/release/app-armeabi-v7a-release.apk "release-artifacts/kinet-${TAG}-armeabi-v7a.apk"
+          fi
+          if [ -f app/build/outputs/apk/release/app-x86_64-release.apk ]; then
+            cp app/build/outputs/apk/release/app-x86_64-release.apk "release-artifacts/kinet-${TAG}-x86_64.apk"
+          fi
+
+          # Copy and rename App Bundle (AAB)
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab "release-artifacts/kinet-${TAG}.aab"
+          fi
+
+          # Generate SHA-256 Checksums
+          cd release-artifacts
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+
+          echo "Prepared artifacts:"
+          ls -la release-artifacts/
+
+      - name: Upload Build Artifacts to Actions Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinet-${{ steps.vars.outputs.TAG }}-builds
+          path: release-artifacts/*
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          name: Kinet ${{ steps.vars.outputs.TAG }}
+          tag_name: ${{ steps.vars.outputs.TAG }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.apk
+            release-artifacts/*.aab
+            release-artifacts/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

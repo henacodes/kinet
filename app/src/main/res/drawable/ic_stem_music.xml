@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Beam across the top -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M9,6 L20,3" />
+    <!-- Stems -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:pathData="M9,6 L9,17 M20,3 L20,14" />
+    <!-- Note heads -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6,17 C4.34,17 3,18.12 3,19.5 C3,20.88 4.34,22 6,22 C7.66,22 9,20.88 9,19.5 L9,17 Z M17,14 C15.34,14 14,15.12 14,16.5 C14,17.88 15.34,19 17,19 C18.66,19 20,17.88 20,16.5 L20,14 Z" />
+</vector>

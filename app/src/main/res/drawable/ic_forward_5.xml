@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Curved arrow clockwise -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,5 C16.42,5 20,8.58 20,13 C20,17.42 16.42,21 12,21 C7.58,21 4,17.42 4,13 C4,9.9 5.77,7.22 8.35,5.9" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M8,2 L8.35,5.9 L4.5,6.5" />
+    <!-- Digit 5 centered -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M13.5,9.5 L10.5,9.5 L10.5,12.5 C10.5,12.5 11,12 12,12 C13.1,12 14,12.9 14,14 C14,15.1 13.1,16 12,16 C10.9,16 10.3,15.3 10.2,14.8" />
+</vector>

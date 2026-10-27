@@ -146,204 +146,209 @@ fun ExportStemsSheet(
                 }
             }
 
-            // Vocals Stem Row
-            StemActionRow(
-                title = "Vocals stem",
-                subtitle = if (selectedFormat == ExportFormat.M4A) "Acapella track (.m4a)" else "Acapella track (.wav)",
-                enabled = !isProcessing,
-                onSave = {
-                    isProcessing = true
-                    statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding vocals to M4A..." else "Saving vocals..."
-                    coroutineScope.launch {
-                        val file = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.vocalsFile,
-                            songTitle = project.title,
-                            stemType = "Vocals",
-                            format = selectedFormat
-                        )
-                        val success = StemExporter.saveStemToDevice(
-                            context = context,
-                            file = file,
-                            displayTitle = project.title,
-                            stemType = "Vocals",
-                            format = selectedFormat
-                        )
-                        isProcessing = false
-                        statusMessage = null
-                        if (success) {
-                            Toast.makeText(context, "Saved Vocals to Music/Kinet", Toast.LENGTH_SHORT).show()
-                            onDismiss()
-                        } else {
-                            Toast.makeText(context, "Failed to save Vocals", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                },
-                onShare = {
-                    isProcessing = true
-                    statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding vocals to M4A..." else "Preparing share..."
-                    coroutineScope.launch {
-                        val file = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.vocalsFile,
-                            songTitle = project.title,
-                            stemType = "Vocals",
-                            format = selectedFormat
-                        )
-                        isProcessing = false
-                        statusMessage = null
+            // Helper function to export a single stem
+            fun exportStem(rawWav: java.io.File, stemName: String, isShare: Boolean) {
+                isProcessing = true
+                val actionName = if (isShare) "Sharing" else "Saving"
+                statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding $stemName to M4A..." else "$actionName $stemName..."
+                coroutineScope.launch {
+                    val file = StemExporter.prepareStemFile(
+                        context = context,
+                        rawWavFile = rawWav,
+                        songTitle = project.title,
+                        stemType = stemName,
+                        format = selectedFormat
+                    )
+                    isProcessing = false
+                    statusMessage = null
+                    if (isShare) {
                         StemExporter.shareStem(
                             context = context,
                             file = file,
                             displayTitle = project.title,
-                            stemType = "Vocals",
+                            stemType = stemName,
                             format = selectedFormat
                         )
                         onDismiss()
-                    }
-                }
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Instrumental Stem Row
-            StemActionRow(
-                title = "Instrumental stem",
-                subtitle = if (selectedFormat == ExportFormat.M4A) "Accompaniment track (.m4a)" else "Accompaniment track (.wav)",
-                enabled = !isProcessing,
-                onSave = {
-                    isProcessing = true
-                    statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding accompaniment to M4A..." else "Saving accompaniment..."
-                    coroutineScope.launch {
-                        val file = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.accompanimentFile,
-                            songTitle = project.title,
-                            stemType = "Instrumental",
-                            format = selectedFormat
-                        )
+                    } else {
                         val success = StemExporter.saveStemToDevice(
                             context = context,
                             file = file,
                             displayTitle = project.title,
-                            stemType = "Instrumental",
+                            stemType = stemName,
                             format = selectedFormat
                         )
-                        isProcessing = false
-                        statusMessage = null
                         if (success) {
-                            Toast.makeText(context, "Saved Instrumental to Music/Kinet", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Saved $stemName to Music/Kinet", Toast.LENGTH_SHORT).show()
                             onDismiss()
                         } else {
-                            Toast.makeText(context, "Failed to save Instrumental", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Failed to save $stemName", Toast.LENGTH_SHORT).show()
                         }
                     }
-                },
-                onShare = {
-                    isProcessing = true
-                    statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding accompaniment to M4A..." else "Preparing share..."
-                    coroutineScope.launch {
-                        val file = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.accompanimentFile,
-                            songTitle = project.title,
-                            stemType = "Instrumental",
-                            format = selectedFormat
-                        )
-                        isProcessing = false
-                        statusMessage = null
-                        StemExporter.shareStem(
-                            context = context,
-                            file = file,
-                            displayTitle = project.title,
-                            stemType = "Instrumental",
-                            format = selectedFormat
-                        )
-                        onDismiss()
-                    }
                 }
-            )
+            }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            if (project.isFourStem && project.drumsFile != null && project.bassFile != null && project.otherFile != null) {
+                // 1. Vocals Stem
+                StemActionRow(
+                    title = "Vocals stem",
+                    subtitle = if (selectedFormat == ExportFormat.M4A) "Acapella lead & backing (.m4a)" else "Acapella track (.wav)",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.vocalsFile, "Vocals", false) },
+                    onShare = { exportStem(project.vocalsFile, "Vocals", true) }
+                )
 
-            // Both Stems Row
-            StemActionRow(
-                title = "Both stems",
-                subtitle = "Vocals and Instrumental together",
-                enabled = !isProcessing,
-                onSave = {
-                    isProcessing = true
-                    statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding stems to M4A..." else "Saving both stems..."
-                    coroutineScope.launch {
-                        val vocFile = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.vocalsFile,
-                            songTitle = project.title,
-                            stemType = "Vocals",
-                            format = selectedFormat
-                        )
-                        val accFile = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.accompanimentFile,
-                            songTitle = project.title,
-                            stemType = "Instrumental",
-                            format = selectedFormat
-                        )
-                        val s1 = StemExporter.saveStemToDevice(
-                            context = context,
-                            file = vocFile,
-                            displayTitle = project.title,
-                            stemType = "Vocals",
-                            format = selectedFormat
-                        )
-                        val s2 = StemExporter.saveStemToDevice(
-                            context = context,
-                            file = accFile,
-                            displayTitle = project.title,
-                            stemType = "Instrumental",
-                            format = selectedFormat
-                        )
-                        isProcessing = false
-                        statusMessage = null
-                        if (s1 && s2) {
-                            Toast.makeText(context, "Saved both stems to Music/Kinet", Toast.LENGTH_SHORT).show()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 2. Drums Stem
+                StemActionRow(
+                    title = "Drums stem",
+                    subtitle = if (selectedFormat == ExportFormat.M4A) "Isolated percussion & beat (.m4a)" else "Drums track (.wav)",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.drumsFile, "Drums", false) },
+                    onShare = { exportStem(project.drumsFile, "Drums", true) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 3. Bass Stem
+                StemActionRow(
+                    title = "Bass stem",
+                    subtitle = if (selectedFormat == ExportFormat.M4A) "Bass guitar & low synth (.m4a)" else "Bass track (.wav)",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.bassFile, "Bass", false) },
+                    onShare = { exportStem(project.bassFile, "Bass", true) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 4. Other / Melody Stem
+                StemActionRow(
+                    title = "Other stem (Melody)",
+                    subtitle = if (selectedFormat == ExportFormat.M4A) "Guitars, keys & synths (.m4a)" else "Melody track (.wav)",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.otherFile, "Other", false) },
+                    onShare = { exportStem(project.otherFile, "Other", true) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 5. Full Instrumental
+                StemActionRow(
+                    title = "Instrumental mix",
+                    subtitle = "Drums + Bass + Melody without vocals",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.accompanimentFile, "Instrumental", false) },
+                    onShare = { exportStem(project.accompanimentFile, "Instrumental", true) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 6. All 4 Stems Pack
+                StemActionRow(
+                    title = "All 4 stems pack",
+                    subtitle = "Vocals, Drums, Bass, and Other",
+                    enabled = !isProcessing,
+                    onSave = {
+                        isProcessing = true
+                        statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding 4 stems to M4A..." else "Saving 4 stems..."
+                        coroutineScope.launch {
+                            val vF = StemExporter.prepareStemFile(context, project.vocalsFile, project.title, "Vocals", selectedFormat)
+                            val dF = StemExporter.prepareStemFile(context, project.drumsFile, project.title, "Drums", selectedFormat)
+                            val bF = StemExporter.prepareStemFile(context, project.bassFile, project.title, "Bass", selectedFormat)
+                            val oF = StemExporter.prepareStemFile(context, project.otherFile, project.title, "Other", selectedFormat)
+
+                            val s1 = StemExporter.saveStemToDevice(context, vF, project.title, "Vocals", selectedFormat)
+                            val s2 = StemExporter.saveStemToDevice(context, dF, project.title, "Drums", selectedFormat)
+                            val s3 = StemExporter.saveStemToDevice(context, bF, project.title, "Bass", selectedFormat)
+                            val s4 = StemExporter.saveStemToDevice(context, oF, project.title, "Other", selectedFormat)
+
+                            isProcessing = false
+                            statusMessage = null
+                            if (s1 && s2 && s3 && s4) {
+                                Toast.makeText(context, "Saved all 4 stems to Music/Kinet", Toast.LENGTH_SHORT).show()
+                                onDismiss()
+                            } else {
+                                Toast.makeText(context, "Partially saved stems", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onShare = {
+                        isProcessing = true
+                        statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding 4 stems to M4A..." else "Preparing share..."
+                        coroutineScope.launch {
+                            val vF = StemExporter.prepareStemFile(context, project.vocalsFile, project.title, "Vocals", selectedFormat)
+                            val dF = StemExporter.prepareStemFile(context, project.drumsFile, project.title, "Drums", selectedFormat)
+                            val bF = StemExporter.prepareStemFile(context, project.bassFile, project.title, "Bass", selectedFormat)
+                            val oF = StemExporter.prepareStemFile(context, project.otherFile, project.title, "Other", selectedFormat)
+
+                            isProcessing = false
+                            statusMessage = null
+                            StemExporter.shareMultipleStems(context, listOf(vF, dF, bF, oF), project.title, selectedFormat)
                             onDismiss()
-                        } else {
-                            Toast.makeText(context, "Partially saved stems", Toast.LENGTH_SHORT).show()
                         }
                     }
-                },
-                onShare = {
-                    isProcessing = true
-                    statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding stems to M4A..." else "Preparing share..."
-                    coroutineScope.launch {
-                        val vocFile = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.vocalsFile,
-                            songTitle = project.title,
-                            stemType = "Vocals",
-                            format = selectedFormat
-                        )
-                        val accFile = StemExporter.prepareStemFile(
-                            context = context,
-                            rawWavFile = project.accompanimentFile,
-                            songTitle = project.title,
-                            stemType = "Instrumental",
-                            format = selectedFormat
-                        )
-                        isProcessing = false
-                        statusMessage = null
-                        StemExporter.shareBothStems(
-                            context = context,
-                            vocalsFile = vocFile,
-                            accompFile = accFile,
-                            displayTitle = project.title,
-                            format = selectedFormat
-                        )
-                        onDismiss()
+                )
+            } else {
+                // 2-Stem Legacy Mode: Vocals Stem Row
+                StemActionRow(
+                    title = "Vocals stem",
+                    subtitle = if (selectedFormat == ExportFormat.M4A) "Acapella track (.m4a)" else "Acapella track (.wav)",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.vocalsFile, "Vocals", false) },
+                    onShare = { exportStem(project.vocalsFile, "Vocals", true) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Instrumental Stem Row
+                StemActionRow(
+                    title = "Instrumental stem",
+                    subtitle = if (selectedFormat == ExportFormat.M4A) "Accompaniment track (.m4a)" else "Accompaniment track (.wav)",
+                    enabled = !isProcessing,
+                    onSave = { exportStem(project.accompanimentFile, "Instrumental", false) },
+                    onShare = { exportStem(project.accompanimentFile, "Instrumental", true) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Both Stems Row
+                StemActionRow(
+                    title = "Both stems",
+                    subtitle = "Vocals and Instrumental together",
+                    enabled = !isProcessing,
+                    onSave = {
+                        isProcessing = true
+                        statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding stems to M4A..." else "Saving both stems..."
+                        coroutineScope.launch {
+                            val vocFile = StemExporter.prepareStemFile(context, project.vocalsFile, project.title, "Vocals", selectedFormat)
+                            val accFile = StemExporter.prepareStemFile(context, project.accompanimentFile, project.title, "Instrumental", selectedFormat)
+                            val s1 = StemExporter.saveStemToDevice(context, vocFile, project.title, "Vocals", selectedFormat)
+                            val s2 = StemExporter.saveStemToDevice(context, accFile, project.title, "Instrumental", selectedFormat)
+                            isProcessing = false
+                            statusMessage = null
+                            if (s1 && s2) {
+                                Toast.makeText(context, "Saved both stems to Music/Kinet", Toast.LENGTH_SHORT).show()
+                                onDismiss()
+                            } else {
+                                Toast.makeText(context, "Partially saved stems", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onShare = {
+                        isProcessing = true
+                        statusMessage = if (selectedFormat == ExportFormat.M4A) "Encoding stems to M4A..." else "Preparing share..."
+                        coroutineScope.launch {
+                            val vocFile = StemExporter.prepareStemFile(context, project.vocalsFile, project.title, "Vocals", selectedFormat)
+                            val accFile = StemExporter.prepareStemFile(context, project.accompanimentFile, project.title, "Instrumental", selectedFormat)
+                            isProcessing = false
+                            statusMessage = null
+                            StemExporter.shareBothStems(context, vocFile, accFile, project.title, selectedFormat)
+                            onDismiss()
+                        }
                     }
-                }
-            )
+                )
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
         }

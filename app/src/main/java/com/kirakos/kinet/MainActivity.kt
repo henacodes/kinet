@@ -1,6 +1,9 @@
 package com.kirakos.kinet
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
@@ -43,6 +46,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -53,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.kirakos.kinet.ui.components.*
 import com.kirakos.kinet.ui.theme.*
 import kotlinx.coroutines.launch
@@ -67,10 +72,20 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioSeparator: AudioSeparator
     private val player = DualStemPlayer()
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Permission response handled by system */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashReporter.init(applicationContext)
         enableEdgeToEdge()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
         projectRepository = ProjectRepository(applicationContext)
         audioSeparator = AudioSeparator(applicationContext)
@@ -106,7 +121,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        PlaybackService.stop(applicationContext)
         player.release()
+        if (::audioSeparator.isInitialized) {
+            audioSeparator.close()
+        }
     }
 }
 
@@ -128,6 +147,7 @@ fun formatFileSize(bytes: Long): String {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun KinetApp(
     modifier: Modifier = Modifier,
@@ -149,63 +169,121 @@ fun KinetApp(
     var separationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var completionNotice by remember { mutableStateOf<SeparationCompletionInfo?>(null) }
     var projectToExport by remember { mutableStateOf<SongProject?>(null) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingImportMeta by remember { mutableStateOf<ExtractedMediaMetadata?>(null) }
+    var showImportModeSheet by remember { mutableStateOf(false) }
 
     val isPlaying by player.isPlaying.collectAsState()
     val positionMs by player.positionMs.collectAsState()
     val durationMs by player.durationMs.collectAsState()
 
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(isPlaying, activeProject) {
+        if (isPlaying && activeProject != null) {
+            PlaybackService.start(context, player)
+        }
+    }
+
+    fun startImport(uri: Uri, meta: ExtractedMediaMetadata, isFourStem: Boolean) {
+        val fallbackTitle = resolveFileName(uri)
+        val finalTitle = meta.title.ifBlank { fallbackTitle }
+        isSeparating = true
+        separationProgress = "Preparing audio..."
+        completionNotice = null
+        separationJob = coroutineScope.launch {
+            try {
+                val result = separator.separate(uri, isFourStem = isFourStem) { status ->
+                    separationProgress = status
+                }
+                val saved = repository.saveProject(
+                    title = finalTitle,
+                    durationSeconds = result.durationSeconds,
+                    tempVocals = result.vocalsFile,
+                    tempAccomp = result.accompanimentFile,
+                    tempDrums = result.drumsFile,
+                    tempBass = result.bassFile,
+                    tempOther = result.otherFile,
+                    artist = meta.artist,
+                    album = meta.album,
+                    genre = meta.genre,
+                    year = meta.year,
+                    bitrateKbps = meta.bitrateKbps,
+                    sampleRate = meta.sampleRate,
+                    originalFormat = meta.mimeType,
+                    originalFileSizeBytes = meta.fileSizeBytes
+                )
+                projects = repository.getAllProjects()
+                completionNotice = SeparationCompletionInfo(
+                    title = finalTitle,
+                    durationSeconds = result.durationSeconds,
+                    processingTimeSeconds = result.processingTimeSeconds,
+                    fileSizeBytes = result.fileSizeBytes
+                )
+                activeProject = saved
+                player.load(saved)
+                player.play()
+                PlaybackService.start(context, player)
+                isDeckOpen = true
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                separationProgress = "Separation canceled"
+            } catch (t: Throwable) {
+                val msg = t.localizedMessage ?: t.toString()
+                separationProgress = "Error: $msg"
+                separationError = "Audio separation could not be completed:\n\n$msg\n\nDetails:\n${t.stackTraceToString().take(1200)}"
+            } finally {
+                isSeparating = false
+                separationJob = null
+            }
+        }
+    }
+
+    fun startUpgrade(project: SongProject) {
+        isSeparating = true
+        separationProgress = "Reconstructing stereo mix..."
+        completionNotice = null
+        separationJob = coroutineScope.launch {
+            try {
+                val upgraded = repository.upgradeProjectToFourStems(project, separator) { status ->
+                    separationProgress = status
+                }
+                projects = repository.getAllProjects()
+                if (activeProject?.id == project.id) {
+                    val wasPlaying = player.isPlaying.value
+                    val currentPos = player.positionMs.value
+                    activeProject = upgraded
+                    player.load(upgraded)
+                    player.seekTo(currentPos)
+                    if (wasPlaying) player.play()
+                }
+                completionNotice = SeparationCompletionInfo(
+                    title = upgraded.title,
+                    durationSeconds = upgraded.durationSeconds,
+                    processingTimeSeconds = 0f,
+                    fileSizeBytes = upgraded.originalFileSizeBytes
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                separationProgress = "Upgrade canceled"
+            } catch (t: Throwable) {
+                val msg = t.localizedMessage ?: t.toString()
+                separationProgress = "Error: $msg"
+                separationError = "Upgrade could not be completed:\n\n$msg\n\nDetails:\n${t.stackTraceToString().take(1200)}"
+            } finally {
+                isSeparating = false
+                separationJob = null
+            }
+        }
+    }
+
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             val fallbackTitle = resolveFileName(uri)
             val meta = AudioMetadataExtractor.extract(context, uri, fallbackTitle)
-            val finalTitle = meta.title.ifBlank { fallbackTitle }
-            isSeparating = true
-            separationProgress = "Preparing audio..."
-            completionNotice = null
-            separationJob = coroutineScope.launch {
-                try {
-                    val result = separator.separate(uri) { status ->
-                        separationProgress = status
-                    }
-                    val saved = repository.saveProject(
-                        title = finalTitle,
-                        durationSeconds = result.durationSeconds,
-                        tempVocals = result.vocalsFile,
-                        tempAccomp = result.accompanimentFile,
-                        artist = meta.artist,
-                        album = meta.album,
-                        genre = meta.genre,
-                        year = meta.year,
-                        bitrateKbps = meta.bitrateKbps,
-                        sampleRate = meta.sampleRate,
-                        originalFormat = meta.mimeType,
-                        originalFileSizeBytes = meta.fileSizeBytes
-                    )
-                    projects = repository.getAllProjects()
-                    completionNotice = SeparationCompletionInfo(
-                        title = finalTitle,
-                        durationSeconds = result.durationSeconds,
-                        processingTimeSeconds = result.processingTimeSeconds,
-                        fileSizeBytes = result.fileSizeBytes
-                    )
-                    activeProject = saved
-                    player.load(saved)
-                    player.play()
-                    isDeckOpen = true
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    separationProgress = "Separation canceled"
-                } catch (t: Throwable) {
-                    val msg = t.localizedMessage ?: t.toString()
-                    separationProgress = "Error: $msg"
-                    separationError = "Audio separation could not be completed:\n\n$msg\n\nDetails:\n${t.stackTraceToString().take(1200)}"
-                } finally {
-                    isSeparating = false
-                    separationJob = null
-                }
-            }
+            pendingImportUri = uri
+            pendingImportMeta = meta
+            showImportModeSheet = true
         }
     }
 
@@ -225,6 +303,9 @@ fun KinetApp(
                 },
                 onExport = {
                     projectToExport = activeProject
+                },
+                onUpgrade = {
+                    activeProject?.let { startUpgrade(it) }
                 }
             )
         } else {
@@ -240,14 +321,16 @@ fun KinetApp(
                             activeProject = proj
                             player.load(proj)
                             player.play()
+                            PlaybackService.start(context, player)
                         }
                         isDeckOpen = true
                     },
                     onDeleteProject = { id ->
                         if (isSeparating) return@SongLibraryScreen
                         if (activeProject?.id == id) {
-                            player.pause()
+                            player.clearProject()
                             activeProject = null
+                            PlaybackService.stop(context)
                         }
                         repository.deleteProject(id)
                         projects = repository.getAllProjects()
@@ -299,6 +382,7 @@ fun KinetApp(
                     },
                     onImportClick = { filePicker.launch("audio/*") },
                     onExportProject = { proj -> projectToExport = proj },
+                    onUpgradeProject = { proj -> startUpgrade(proj) },
                     onCancelSeparation = {
                         separationJob?.cancel()
                         separationJob = null
@@ -321,8 +405,9 @@ fun KinetApp(
                         enabled = !isSeparating,
                         onTogglePlayPause = { if (!isSeparating) player.togglePlayPause() },
                         onClose = {
-                            player.stop()
+                            player.clearProject()
                             activeProject = null
+                            PlaybackService.stop(context)
                         },
                         onBarClick = { if (!isSeparating) isDeckOpen = true },
                         modifier = Modifier
@@ -456,6 +541,224 @@ fun KinetApp(
                 project = proj,
                 onDismiss = { projectToExport = null }
             )
+        }
+
+        val currentPendingUri = pendingImportUri
+        val currentPendingMeta = pendingImportMeta
+        if (showImportModeSheet && currentPendingUri != null && currentPendingMeta != null) {
+            val uri = currentPendingUri
+            val meta = currentPendingMeta
+            val title = meta.title.ifBlank { resolveFileName(uri) }
+
+            ModalBottomSheet(
+                onDismissRequest = {
+                    showImportModeSheet = false
+                    pendingImportUri = null
+                    pendingImportMeta = null
+                },
+                containerColor = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "Separate stems",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = title + if (meta.artist.isNotBlank()) " • ${meta.artist}" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    // Card 1: 2 Stems (Fast)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                showImportModeSheet = false
+                                pendingImportUri = null
+                                pendingImportMeta = null
+                                startImport(uri, meta, isFourStem = false)
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surface),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "2",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "2 stems",
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                                    ) {
+                                        Text(
+                                            text = "Fast",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Vocals + Instrumental · Single-pass split for karaoke & practice",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Card 2: 4 Stems (Studio)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                showImportModeSheet = false
+                                pendingImportUri = null
+                                pendingImportMeta = null
+                                startImport(uri, meta, isFourStem = true)
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(HardwareCarbon),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "4",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "4 stems",
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                                    ) {
+                                        Text(
+                                            text = "Deep · Studio split",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Vocals, Drums, Bass, Other · Multi-pass studio isolation",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+
+        // In-deck separation progress modal dialog
+        if (isSeparating && isDeckOpen) {
+            Dialog(onDismissRequest = { /* cannot dismiss while running */ }) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(24.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.5.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text(
+                            text = separationProgress,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -649,6 +952,7 @@ fun SongLibraryScreen(
     onRemoveTrackFromPlaylist: (String, String) -> Unit,
     onExportProject: (SongProject) -> Unit,
     onImportClick: () -> Unit,
+    onUpgradeProject: (SongProject) -> Unit = {},
     onCancelSeparation: () -> Unit,
     isSeparating: Boolean,
     separationProgress: String,
@@ -661,6 +965,7 @@ fun SongLibraryScreen(
     var projectForOptions by remember { mutableStateOf<SongProject?>(null) }
     var projectToRename by remember { mutableStateOf<SongProject?>(null) }
     var projectToDelete by remember { mutableStateOf<SongProject?>(null) }
+    var projectToUpgrade by remember { mutableStateOf<SongProject?>(null) }
     var projectForPlaylist by remember { mutableStateOf<SongProject?>(null) }
     var projectForCategory by remember { mutableStateOf<SongProject?>(null) }
     var projectForDetails by remember { mutableStateOf<SongProject?>(null) }
@@ -702,82 +1007,63 @@ fun SongLibraryScreen(
             .fillMaxSize()
             .padding(horizontal = 20.dp, vertical = 16.dp)
     ) {
-        // --- Header (Original clean light layout with FilledTonalButton) ---
+        // --- Header (Pure iconic brandmark & paired action icon buttons) ---
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(
-                    text = "Kinet",
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontWeight = FontWeight.Light,
-                        fontSize = 30.sp,
-                        letterSpacing = (-0.5).sp
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "Stem library",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            KinetLogo(
+                modifier = Modifier
+                    .size(38.dp, 34.dp)
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null
+                    ) { showAboutDialog = true }
+            )
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                IconButton(
-                    onClick = { showAboutDialog = true },
-                    modifier = Modifier.size(36.dp)
+                // Separate New Track Icon Button (Left of Info)
+                Surface(
+                    shape = RoundedCornerShape(11.dp),
+                    color = if (isSeparating) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                            else MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                    modifier = Modifier.size(38.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = "About Kinet",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    IconButton(
+                        onClick = if (isSeparating) { { showCancelConfirmation = true } } else onImportClick,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            imageVector = if (isSeparating) Icons.Default.Close else Icons.Default.Add,
+                            contentDescription = if (isSeparating) "Cancel separation" else "Separate new track",
+                            tint = if (isSeparating) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
 
-                if (isSeparating) {
-                    FilledTonalButton(
-                        onClick = { showCancelConfirmation = true },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
-                            contentColor = MaterialTheme.colorScheme.error
-                        ),
-                        elevation = null
+                // Info / About App Icon Button (Right of Separate New)
+                Surface(
+                    shape = RoundedCornerShape(11.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    IconButton(
+                        onClick = { showAboutDialog = true },
+                        modifier = Modifier.fillMaxSize()
                     ) {
                         Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Cancel separation",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.error
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "About Kinet",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-                    }
-                } else {
-                    FilledTonalButton(
-                        onClick = onImportClick,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onBackground
-                        ),
-                        elevation = null
-                    ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Separate new", fontSize = 13.sp)
                     }
                 }
             }
@@ -1135,6 +1421,22 @@ fun SongLibraryScreen(
                     }
                 )
 
+                // Upgrade to 4 Stems (if 2 stems)
+                if (!proj.isFourStem) {
+                    ListItem(
+                        headlineContent = { Text("Upgrade to 4 stems", fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                        supportingContent = { Text("Separate drums, bass, and other instruments", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) },
+                        leadingContent = {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        },
+                        modifier = Modifier.clickable {
+                            val current = proj
+                            projectForOptions = null
+                            projectToUpgrade = current
+                        }
+                    )
+                }
+
                 // Export Stems
                 ListItem(
                     headlineContent = { Text("Export stems", fontSize = 14.sp) },
@@ -1182,6 +1484,51 @@ fun SongLibraryScreen(
     }
 
     // --- Dialogs ---
+
+    // Upgrade to 4 Stems Confirmation Dialog
+    if (projectToUpgrade != null) {
+        val proj = projectToUpgrade!!
+        AlertDialog(
+            onDismissRequest = { projectToUpgrade = null },
+            title = {
+                Text(
+                    text = "Upgrade to 4 stems",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Text(
+                    text = "Extract drums, bass, and other instruments using deep on-device separation for \"${proj.title}\". This multi-pass process runs locally and takes more processing time than the quick split.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val current = projectToUpgrade
+                        projectToUpgrade = null
+                        if (current != null) {
+                            onUpgradeProject(current)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text("Upgrade")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { projectToUpgrade = null }) {
+                    Text("Cancel")
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
 
     // Create Playlist Dialog
     if (showCreatePlaylistDialog) {
@@ -1530,22 +1877,28 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Column {
-                Text(
-                    text = "About Kinet",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Light,
-                        fontSize = 22.sp,
-                        letterSpacing = (-0.5).sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Version 0.1.1",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                KinetLogo(modifier = Modifier.size(36.dp, 34.dp))
+                Column {
+                    Text(
+                        text = "About Kinet",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Light,
+                            fontSize = 22.sp,
+                            letterSpacing = (-0.5).sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Version 0.2.0",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         text = {
@@ -1554,7 +1907,7 @@ fun AboutAppDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "On-device AI audio stem separation with independent dual playback deck and real-time chord detection.",
+                    text = "On-device 4-stem studio isolation with independent channel strips, pitch shifting, A/B looping, and chord detection.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp
@@ -1766,6 +2119,20 @@ fun CleanProjectCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (project.isFourStem) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = if (project.isFourStem) "4 stems" else "2 stems",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = if (project.isFourStem) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     if (project.category.isNotBlank() && !project.category.equals("General", ignoreCase = true)) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
@@ -1812,7 +2179,8 @@ fun StemPlayerScreen(
     project: SongProject,
     player: DualStemPlayer,
     onBack: () -> Unit,
-    onExport: () -> Unit
+    onExport: () -> Unit,
+    onUpgrade: () -> Unit = {}
 ) {
     val isPlaying by player.isPlaying.collectAsState()
     val positionMs by player.positionMs.collectAsState()
@@ -1820,9 +2188,21 @@ fun StemPlayerScreen(
     val waveform by player.waveform.collectAsState()
 
     val vocVol by player.vocalsVolume.collectAsState()
+    val drumVol by player.drumsVolume.collectAsState()
+    val bassVol by player.bassVolume.collectAsState()
+    val otherVol by player.otherVolume.collectAsState()
     val accVol by player.accompVolume.collectAsState()
+
     val isVocMuted by player.isVocalsMuted.collectAsState()
+    val isDrumMuted by player.isDrumsMuted.collectAsState()
+    val isBassMuted by player.isBassMuted.collectAsState()
+    val isOtherMuted by player.isOtherMuted.collectAsState()
     val isAccMuted by player.isAccompMuted.collectAsState()
+
+    val isVocSolo by player.isVocalsSolo.collectAsState()
+    val isDrumSolo by player.isDrumsSolo.collectAsState()
+    val isBassSolo by player.isBassSolo.collectAsState()
+    val isOtherSolo by player.isOtherSolo.collectAsState()
 
     val pitchSt by player.pitchSemitones.collectAsState()
     val loopA by player.loopStartMs.collectAsState()
@@ -1879,7 +2259,7 @@ fun StemPlayerScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Analog stem deck",
+                        text = if (project.isFourStem) "4-stem studio deck" else "Analog stem deck",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1890,6 +2270,65 @@ fun StemPlayerScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (!project.isFourStem) {
+                    var showUpgradeConfirmation by remember { mutableStateOf(false) }
+
+                    FilledTonalButton(
+                        onClick = { showUpgradeConfirmation = true },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                        elevation = null,
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Text("4 stems", fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
+
+                    if (showUpgradeConfirmation) {
+                        AlertDialog(
+                            onDismissRequest = { showUpgradeConfirmation = false },
+                            title = {
+                                Text(
+                                    text = "Upgrade to 4 stems",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            text = {
+                                Text(
+                                    text = "Extract drums, bass, and other instruments using deep on-device separation. This multi-pass process will run locally and takes more processing time than the quick split.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        showUpgradeConfirmation = false
+                                        onUpgrade()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Text("Upgrade")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showUpgradeConfirmation = false }) {
+                                    Text("Cancel")
+                                }
+                            },
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                    }
+                }
+
                 FilledTonalButton(
                     onClick = onExport,
                     shape = RoundedCornerShape(10.dp),
@@ -2102,17 +2541,39 @@ fun StemPlayerScreen(
             isLooping = isLooping,
             onSetLoopA = { player.setLoopPointA() },
             onSetLoopB = { player.setLoopPointB() },
-            onClearLoop = { player.clearLoop() }
+            onClearLoop = { player.clearLoop() },
+            onJumpToA = { player.jumpToLoopStart() }
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
         // 5. Modular Stem Faders Bay
         StemFadersBay(
+            isFourStem = project.isFourStem,
             vocalsVolume = vocVol,
             isVocalsMuted = isVocMuted,
+            isVocalsSolo = isVocSolo,
             onVocalsVolumeChange = { player.setVocalsVolume(it) },
             onVocalsMuteToggle = { player.toggleVocalsMute() },
+            onVocalsSoloToggle = { player.toggleVocalsSolo() },
+            drumsVolume = drumVol,
+            isDrumsMuted = isDrumMuted,
+            isDrumsSolo = isDrumSolo,
+            onDrumsVolumeChange = { player.setDrumsVolume(it) },
+            onDrumsMuteToggle = { player.toggleDrumsMute() },
+            onDrumsSoloToggle = { player.toggleDrumsSolo() },
+            bassVolume = bassVol,
+            isBassMuted = isBassMuted,
+            isBassSolo = isBassSolo,
+            onBassVolumeChange = { player.setBassVolume(it) },
+            onBassMuteToggle = { player.toggleBassMute() },
+            onBassSoloToggle = { player.toggleBassSolo() },
+            otherVolume = otherVol,
+            isOtherMuted = isOtherMuted,
+            isOtherSolo = isOtherSolo,
+            onOtherVolumeChange = { player.setOtherVolume(it) },
+            onOtherMuteToggle = { player.toggleOtherMute() },
+            onOtherSoloToggle = { player.toggleOtherSolo() },
             accompVolume = accVol,
             isAccompMuted = isAccMuted,
             onAccompVolumeChange = { player.setAccompanimentVolume(it) },
@@ -2128,7 +2589,7 @@ fun StemPlayerScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             FilledTonalButton(
-                onClick = { player.seekTo(maxOf(0L, positionMs - 5000L)) },
+                onClick = { player.seekRelative(-5000L) },
                 shape = CircleShape,
                 modifier = Modifier.size(44.dp),
                 contentPadding = PaddingValues(0.dp),
@@ -2164,7 +2625,7 @@ fun StemPlayerScreen(
             Spacer(modifier = Modifier.width(22.dp))
 
             FilledTonalButton(
-                onClick = { player.seekTo(minOf(durationMs, positionMs + 5000L)) },
+                onClick = { player.seekRelative(5000L) },
                 shape = CircleShape,
                 modifier = Modifier.size(46.dp),
                 contentPadding = PaddingValues(0.dp),
